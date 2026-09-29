@@ -12,7 +12,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, cast
 
 from firstcoder.utils.subprocess import process_group_kwargs, terminate_process_group
 from firstcoder.utils.text import truncate_head_tail
@@ -102,7 +102,7 @@ class ProcessManager:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                **process_group_kwargs(),
+                **cast(Any, process_group_kwargs()),
             )
         finally:
             # 子进程已经继承独立文件句柄；父进程不保留写端，避免 CLI 退出时影响服务。

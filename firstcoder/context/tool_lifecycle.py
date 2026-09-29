@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 import hashlib
 from pathlib import PureWindowsPath
-from typing import Any
+from typing import Any, cast
 
 from firstcoder.context.models import AgentMessage, MessagePart
 
@@ -87,7 +87,7 @@ def index_tool_result_lifecycles(
             if part.metadata.get("ok") is not True:
                 lifecycle = ToolResultLifecycle.FRESH
                 reason = "failed_or_unknown_result"
-            elif tool_name == "view":
+            elif tool_name == "view" and call is not None:
                 lifecycle = ToolResultLifecycle.FRESH
                 reason = "view_source_read"
                 target = _view_target(part.metadata.get("data"), call.arguments)
@@ -176,7 +176,7 @@ def _view_target(data: object, arguments: dict[str, Any]) -> SourceReadTarget | 
             return None
 
     total_lines = data.get("total_lines")
-    is_complete_view = data.get("truncated") is False and isinstance(total_lines, int) and not isinstance(total_lines, bool) and total_lines >= end_line
+    is_complete_view = data.get("truncated") is False and isinstance(total_lines, int) and not isinstance(total_lines, bool) and isinstance(end_line, int) and not isinstance(end_line, bool) and total_lines >= end_line
     if is_complete_view:
         end_line = total_lines
     return SourceReadTarget(
@@ -266,7 +266,7 @@ def _covers(later: SourceReadTarget, earlier: SourceReadTarget) -> bool:
         return True
     if earlier.is_full_file or later.start_line is None or later.end_line is None:
         return False
-    return later.start_line <= earlier.start_line and later.end_line >= earlier.end_line
+    return later.start_line <= cast(int, earlier.start_line) and later.end_line >= cast(int, earlier.end_line)
 
 
 def _mark_derived_duplicates(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from firstcoder.context.archive import ArchiveIntegrityError, ToolResultArchive
 from firstcoder.context.checkpoint import CheckpointIndex
@@ -212,7 +212,7 @@ class CompactionPipeline:
                 reason=stopped_at,
                 target_tokens=request.target_tokens,
                 source_part_ids=[str(replacement["source_part_id"]) for replacement in replacements],
-                output_part_ids=[str(replacement["replacement_part"]["id"]) for replacement in replacements],
+                output_part_ids=[str(cast(dict[str, object], replacement["replacement_part"])["id"]) for replacement in replacements],
                 replacements=replacements,
                 noop=noop,
                 deduped=deduped,

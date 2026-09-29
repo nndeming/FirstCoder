@@ -10,7 +10,7 @@ from firstcoder.utils.text import optional_str
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Collection
+from typing import Any, Collection, cast
 
 from firstcoder.context.events import SessionEvent
 from firstcoder.context.identity import new_event_id, stable_json_hash
@@ -296,9 +296,9 @@ def observation_from_tool_result_data(data: dict[str, object]) -> TaskBoundaryOb
         confirmed_change=bool(data.get("confirmed_change")),
         should_trigger_compaction=bool(data.get("should_trigger_compaction")),
         triggered_compaction=bool(data.get("triggered_compaction")),
-        stable_count=int(data.get("stable_count") or 0),
+        stable_count=int(cast(Any, data.get("stable_count")) or 0),
         confirmation_reason=str(data.get("confirmation_reason") or "not_confirmed"),
-        required_stable_count=int(data.get("required_stable_count") or 2),
+        required_stable_count=int(cast(Any, data.get("required_stable_count")) or 2),
         event_version=str(event_version),
         strategy_version=str(strategy_version),
         created_at=str(data.get("created_at") or ""),

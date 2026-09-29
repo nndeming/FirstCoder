@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from difflib import unified_diff
 from hashlib import sha256
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from firstcoder.providers.types import ToolCall
 from firstcoder.tools.apply_patch import PatchPlan, _apply_plan, parse_patch
@@ -94,16 +94,17 @@ def build_prewrite_review(
     if not supports_prewrite_review(tool_call.name):
         return PrewriteReview(tool_name=tool_call.name, error=f"工具 {tool_call.name} 不支持写前预览")
 
+    arguments = cast(dict[str, object], tool_call.arguments)
     sandbox = PathSandbox(root, access=access)
     try:
         if tool_call.name == "write":
-            files = (_review_write(sandbox, tool_call.arguments),)
+            files = (_review_write(sandbox, arguments),)
         elif tool_call.name == "edit":
-            files = (_review_edit(sandbox, tool_call.arguments),)
+            files = (_review_edit(sandbox, arguments),)
         elif tool_call.name == "apply_patch":
-            files = tuple(_review_apply_patch(sandbox, tool_call.arguments))
+            files = tuple(_review_apply_patch(sandbox, arguments))
         else:
-            files = tuple(_review_delete(sandbox, tool_call.arguments))
+            files = tuple(_review_delete(sandbox, arguments))
     except (TypeError, ValueError, UnicodeDecodeError) as exc:
         return PrewriteReview(tool_name=tool_call.name, error=str(exc))
     return PrewriteReview(tool_name=tool_call.name, files=files, summary=_summarize(files))
@@ -323,7 +324,13 @@ def _review_file(
         added_lines = 0
         removed_lines = 0
     else:
-        diff, added_lines, removed_lines = _unified_diff(path, before, after, source_path=source_path)
+        # binary 为 False 时 before 必为 str | None（bytes 已在上面的分支处理）。
+        diff, added_lines, removed_lines = _unified_diff(
+            path,
+            cast(str | None, before),
+            after,
+            source_path=source_path,
+        )
     snapshot = snapshot or ((path, _content_digest(before)),)
     return ReviewFile(
         path=path,

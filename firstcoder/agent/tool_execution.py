@@ -521,8 +521,10 @@ class ToolExecutor:
             return None
         if preflight is None:
             return None
+        permission_manager = self.session.permission_manager
+        assert permission_manager is not None
         review = build_prewrite_review(
-            self.session.permission_manager.policy.project_root,
+            permission_manager.policy.project_root,
             tool_call,
             access=self.session.sandbox_access,
         )

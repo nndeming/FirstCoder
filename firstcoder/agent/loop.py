@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from typing import Literal
+from typing import Literal, cast
 
 import anyio
 
@@ -42,7 +42,7 @@ from firstcoder.input.attachments import UserAttachment
 from firstcoder.permissions.types import PermissionDecision, PermissionDecisionKind, PermissionRequest
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
-from firstcoder.providers.types import ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, MainRequestOptions, ToolCall
+from firstcoder.providers.types import ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, FinishReason, MainRequestOptions, ToolCall
 from firstcoder.tools.permission_results import (
     make_permission_denied_result,
     make_prewrite_review_failed_result,
@@ -441,7 +441,10 @@ class AgentLoop:
         }
         for message_id in message_ids:
             if message_id:
-                self._tag_message_parts_with_task_hash(message_id, active_hash)
+                self._tag_message_parts_with_task_hash(
+                    message_id,
+                    active_hash if isinstance(active_hash, str) else None,
+                )
 
     def _append_permission_resume_result(self, request_id: str, answer: str) -> AgentTurnResult | None:
         pending = self._pending_permission_for_resume(request_id)
@@ -542,8 +545,10 @@ class AgentLoop:
         pending: PendingPermissionExecution,
         answer: str,
     ):
+        permission_manager = self.session.permission_manager
+        assert permission_manager is not None
         if not pending.review_only:
-            return self.session.permission_manager.resolve_confirmation(pending.permission_request, answer)
+            return permission_manager.resolve_confirmation(pending.permission_request, answer)
         normalized = answer.strip().lower()
         if normalized in {"allow_once", "allow", "once", "2"}:
             current = self.session.preflight_tool_call_permission(pending.tool_call)
@@ -551,7 +556,7 @@ class AgentLoop:
                 return current.decision
             return PermissionDecision(kind=PermissionDecisionKind.ALLOW, reason="用户批准应用已预览的修改。")
         if normalized in {"deny", "no", "1"} or normalized.startswith(("reject:", "reject_with_feedback:")):
-            return self.session.permission_manager.resolve_confirmation(pending.permission_request, answer)
+            return permission_manager.resolve_confirmation(pending.permission_request, answer)
         return PermissionDecision(
             kind=PermissionDecisionKind.DENY,
             reason=f"未知写前预览选择：{answer}",
@@ -577,8 +582,10 @@ class AgentLoop:
                 request=pending.permission_request,
                 error=pending.prewrite_review.error or "未知错误",
             )
+        permission_manager = self.session.permission_manager
+        assert permission_manager is not None
         if pending.prewrite_review.is_current(
-            self.session.permission_manager.policy.project_root,
+            permission_manager.policy.project_root,
             access=self.session.sandbox_access,
         ):
             return None
@@ -1611,7 +1618,7 @@ class AgentLoop:
             model=self.provider.model,
             content=messages[reason],
             tool_calls=[],
-            finish_reason=reason.value,
+            finish_reason=cast(FinishReason, reason.value),
             raw=raw,
         )
 
@@ -1621,7 +1628,7 @@ class AgentLoop:
             model=self.provider.model,
             content="当前任务已中断。",
             tool_calls=[],
-            finish_reason="interrupted",
+            finish_reason=cast(FinishReason, "interrupted"),
             raw={"interrupted": True},
         )
 

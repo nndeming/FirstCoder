@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, cast, get_origin, get_type_hints
 
-from firstcoder.utils.schema import object_schema, property_schema
+from firstcoder.utils.schema import JsonSchemaType, object_schema, property_schema
 from firstcoder.providers.types import ToolDefinition
 
 if TYPE_CHECKING:
@@ -70,17 +70,17 @@ def tool_from_function(
     )
 
 
-def _annotation_to_json_type(annotation: Any) -> str:
+def _annotation_to_json_type(annotation: Any) -> JsonSchemaType:
     """把 Python 类型注解转换成 JSON Schema 类型。"""
 
     if annotation is inspect.Signature.empty:
         return "string"
 
     if annotation in PYTHON_TYPE_TO_JSON_TYPE:
-        return PYTHON_TYPE_TO_JSON_TYPE[annotation]
+        return cast(JsonSchemaType, PYTHON_TYPE_TO_JSON_TYPE[annotation])
 
     origin = get_origin(annotation)
     if origin in PYTHON_TYPE_TO_JSON_TYPE:
-        return PYTHON_TYPE_TO_JSON_TYPE[origin]
+        return cast(JsonSchemaType, PYTHON_TYPE_TO_JSON_TYPE[origin])
 
     return "string"

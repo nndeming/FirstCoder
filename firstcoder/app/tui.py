@@ -19,6 +19,7 @@ from uuid import uuid4
 
 import anyio
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.events import Key
@@ -485,7 +486,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             return
 
         pending = getattr(self.chat_runner, "last_pending_input", None)
-        if getattr(pending, "kind", None) == "permission_confirmation":
+        if pending is not None and getattr(pending, "kind", None) == "permission_confirmation":
             payload = getattr(pending, "payload", {}) or {}
             review_payload = payload.get("prewrite_review")
             if isinstance(review_payload, dict):
@@ -557,7 +558,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
                 "skills",
             ),
         }
-        picker_spec = picker_specs.get(action_type)
+        picker_spec = picker_specs.get(action_type) if isinstance(action_type, str) else None
         if picker_spec is not None:
             kind, title, items_key, item_factory, empty_text, footer, count_label = picker_spec
             self._open_picker(
@@ -760,6 +761,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             previous_tool_handler = self._install_tool_event_handler(token)
             self._preserve_turn_metrics()
             self._show_working_indicator("resuming with permission answer...")
+            assert self.chat_runner is not None
             response = await self.chat_runner.aresume_with_user_input(request_id, answer)
         except asyncio.CancelledError:
             return
@@ -795,6 +797,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
                     token=token,
                 )
             self._show_working_indicator("planning next step...")
+            assert self.chat_runner is not None
             response = (
                 await self.chat_runner.arun_user_turn(text, attachments=attachments)
                 if attachments

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from firstcoder.app.commands import CommandResult
+from firstcoder.agent.session import AgentSession
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.writer import SessionEventWriter
 from firstcoder.session.fork import ForkSessionService
@@ -41,7 +42,7 @@ class SessionCommandHandler:
     resume_service: ResumeService | None = None
     share_service: SessionShareService | None = None
     store: JsonlSessionStore | None = None
-    on_resume: Callable[[SessionRuntimeLike], None] | None = None
+    on_resume: Callable[[AgentSession], None] | None = None
 
     def handle(self, text: str) -> CommandResult:
         command = text.strip()

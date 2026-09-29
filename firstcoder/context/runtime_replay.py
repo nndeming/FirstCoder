@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from firstcoder.utils.text import optional_str
 
 from firstcoder.context.events import SessionEvent
@@ -134,4 +136,4 @@ def _status_from_compaction(compaction_event: dict[str, object]) -> str:
 def _optional_int(value: object) -> int | None:
     if value in (None, ""):
         return None
-    return int(value)
+    return int(cast(Any, value))

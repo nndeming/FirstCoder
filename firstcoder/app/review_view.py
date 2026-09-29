@@ -18,8 +18,9 @@ def render_prewrite_review(
 ) -> Text:
     """Render one bounded review card with red/green unified diff lines."""
 
-    files = [item for item in payload.get("files", []) if isinstance(item, dict)]
-    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    files = [item for item in _object_list(payload.get("files")) if isinstance(item, dict)]
+    summary_value = payload.get("summary")
+    summary = summary_value if isinstance(summary_value, dict) else {}
     expanded = expanded_paths or set()
     added = _int(summary.get("added_lines"))
     removed = _int(summary.get("removed_lines"))
@@ -72,7 +73,7 @@ def review_command_from_text(text: str, payload: dict[str, object]) -> tuple[str
         return "clear", None
     if not remainder:
         return "show", None
-    known_paths = {str(item.get("path") or "") for item in payload.get("files", []) if isinstance(item, dict)}
+    known_paths = {str(item.get("path") or "") for item in _object_list(payload.get("files")) if isinstance(item, dict)}
     return ("show", remainder) if remainder in known_paths else None
 
 
@@ -114,6 +115,12 @@ def _operation_style(operation: str) -> str:
 
 def _file_label(count: int) -> str:
     return f"{count} file" if count == 1 else f"{count} files"
+
+
+def _object_list(value: object) -> list[object]:
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return []
 
 
 def _int(value: Any) -> int:

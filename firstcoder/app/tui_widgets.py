@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import cast
 
 from textual import events
 from textual.binding import Binding
 from textual.message import Message
 from textual.screen import Screen
+from textual.visual import VisualType
 from textual.widgets import Markdown, Static, TextArea
 
 
@@ -100,7 +102,7 @@ class ComposerTextArea(TextArea):
 
 def _plain_static(content: object = "", *args, **kwargs) -> Static:
     kwargs.setdefault("markup", False)
-    return Static(content, *args, **kwargs)
+    return Static(cast(VisualType, content), *args, **kwargs)
 
 
 def _observe_markdown_update(update_result) -> None:

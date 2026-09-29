@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypedDict
 
 from firstcoder.permissions.types import PermissionAction
 from firstcoder.tools.file_feedback import format_change_content, render_text_diff
@@ -41,6 +42,17 @@ class PatchPlan:
     """完整 patch 的结构化计划。"""
 
     operations: list[PatchOperation]
+
+
+class _ApplyPlanOutcome(TypedDict):
+    """`_apply_plan` 的结构化执行结果。"""
+
+    changed_files: list[str]
+    created_files: list[str]
+    deleted_files: list[str]
+    moved_files: list[dict[str, str]]
+    diff: str
+    diff_truncated: bool
 
 
 def create_apply_patch_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
@@ -215,7 +227,7 @@ def _parse_delete_file(lines: list[str], index: int) -> tuple[PatchOperation, in
     return PatchOperation(action="delete", path=path), index + 1
 
 
-def _apply_plan(sandbox: PathSandbox, plan: PatchPlan, *, dry_run: bool) -> dict[str, object]:
+def _apply_plan(sandbox: PathSandbox, plan: PatchPlan, *, dry_run: bool) -> _ApplyPlanOutcome:
     """应用解析后的补丁计划。"""
 
     changed_files: list[str] = []

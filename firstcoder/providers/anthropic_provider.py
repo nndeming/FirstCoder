@@ -37,6 +37,7 @@ from firstcoder.providers.types import (
     FinishReason,
     ProviderCapabilities,
     ProviderDiagnostics,
+    TokenUsage,
     ToolCall,
     ToolChoice,
     ToolChoiceFunction,

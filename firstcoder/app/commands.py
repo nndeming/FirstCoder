@@ -21,9 +21,14 @@ from firstcoder.context.token_budget import ContextBudget
 
 
 class SessionLike(Protocol):
-    session_id: str
-    runtime_state: SessionRuntimeState
-    current_turn: int
+    @property
+    def session_id(self) -> str: ...
+
+    @property
+    def runtime_state(self) -> SessionRuntimeState: ...
+
+    @property
+    def current_turn(self) -> int: ...
 
     def rebuild_view(self) -> SessionView: ...
 
@@ -93,8 +98,9 @@ class ContextCommandHandler:
                 target_tokens=_manual_target_tokens(budget),
             )
         )
-        if _is_noop_compact(result):
-            return f"Manual compact skipped: {result.programmatic_event.reason} " f"({result.before_tokens} -> {result.after_tokens} tokens)"
+        event = result.programmatic_event
+        if event is not None and _is_noop_compact(result):
+            return f"Manual compact skipped: {event.reason} " f"({result.before_tokens} -> {result.after_tokens} tokens)"
         return f"Manual compact {result.status}: {result.reason} " f"({result.before_tokens} -> {result.after_tokens} tokens)"
 
 

@@ -13,6 +13,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from firstcoder.runtime.cancellation import CancellationToken
 from firstcoder.utils.text import truncate_head_tail
@@ -165,7 +166,7 @@ def _run_command_with_process_group(
     )
 
 
-def _process_group_kwargs() -> dict[str, int | bool]:
+def _process_group_kwargs() -> dict[str, Any]:
     """Start each command in its own process group/session."""
 
     if os.name == "nt":
@@ -173,7 +174,7 @@ def _process_group_kwargs() -> dict[str, int | bool]:
     return {"start_new_session": True}
 
 
-def _resource_limit_kwargs() -> dict[str, object]:
+def _resource_limit_kwargs() -> dict[str, Any]:
     """Apply CPU/memory rlimits to child processes on POSIX."""
 
     if os.name == "nt" or resource is None:

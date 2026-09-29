@@ -1,5 +1,7 @@
 """工具定义、注册和执行入口。"""
 
+from typing import TYPE_CHECKING
+
 from firstcoder.tools.builtin import create_builtin_registry
 from firstcoder.tools.apply_patch import create_apply_patch_tool
 from firstcoder.tools.ask_user import create_ask_user_tool
@@ -25,6 +27,15 @@ from firstcoder.tools.types import Tool, ToolExecutor, ToolResult
 from firstcoder.tools.view import create_view_tool
 from firstcoder.tools.web_search import create_web_search_tool
 from firstcoder.tools.write import create_write_tool
+
+if TYPE_CHECKING:
+    # 这些名字由模块级 __getattr__ 惰性导出；这里仅在类型检查时声明，
+    # 让 pyright 能校验 __all__，同时避免包级循环导入。
+    from firstcoder.tools.delegate import create_delegate_tool
+    from firstcoder.tools.task_create import create_task_create_tool
+    from firstcoder.tools.task_list import create_task_list_tool
+    from firstcoder.tools.task_revise import create_task_revise_tool
+    from firstcoder.tools.task_update import create_task_update_tool
 
 __all__ = [
     "Tool",

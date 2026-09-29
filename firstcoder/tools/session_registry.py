@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Collection, Protocol
+from typing import Any, Collection, Protocol
 
 from firstcoder.context.runtime_state import SessionRuntimeState
 from firstcoder.context.store import JsonlSessionStore
@@ -12,6 +12,7 @@ from firstcoder.context.writer import SessionEventWriter
 from firstcoder.context.task_boundary import TaskBoundaryPolicy, TaskBoundaryService
 from firstcoder.permissions.manager import PermissionManager
 from firstcoder.planning.service import TaskPlanService
+from firstcoder.providers.types import ToolDefinition
 from firstcoder.skills.models import SkillCatalog
 from firstcoder.tools.load_skill import create_load_skill_tool
 from firstcoder.tools.permission_registry import PermissionAwareToolRegistry
@@ -22,7 +23,7 @@ from firstcoder.tools.task_create import create_task_create_tool
 from firstcoder.tools.task_list import create_task_list_tool
 from firstcoder.tools.task_revise import create_task_revise_tool
 from firstcoder.tools.task_update import create_task_update_tool
-from firstcoder.tools.types import Tool
+from firstcoder.tools.types import Tool, ToolResult
 
 
 class ToolRegistryLike(Protocol):
@@ -30,13 +31,15 @@ class ToolRegistryLike(Protocol):
 
     def register(self, tool: Tool) -> None: ...
 
-    def definitions(self): ...
+    def definitions(self) -> list[ToolDefinition]: ...
 
     def names(self) -> list[str]: ...
 
     def tools(self) -> list[Tool]: ...
 
-    def execute(self, name: str, arguments=None): ...
+    def get(self, name: str) -> Tool | None: ...
+
+    def execute(self, name: str, arguments: dict[str, Any] | str | None = None) -> ToolResult: ...
 
 
 def create_session_tool_registry(

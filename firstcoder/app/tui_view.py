@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from _thread import LockType
+from typing import Any, Callable, cast
 
 from rich.text import Text
 from textual.css.query import NoMatches
@@ -22,6 +24,7 @@ from firstcoder.app.activity_view import (
     turn_metrics_text,
 )
 from firstcoder.app.permission_view import permission_prompt_text
+from firstcoder.app.ports import ChatRunnerLike, CurrentSessionLike
 from firstcoder.app.review_view import render_prewrite_review
 from firstcoder.app.topbar_view import (
     PERMISSION_MODE_COLORS,
@@ -36,8 +39,8 @@ from firstcoder.app.transcript_view import (
     entry_plain_text,
     tool_event_entry_kind,
 )
-from firstcoder.app.tui_state import TuiEntryKind, TuiTranscriptEntry
-from firstcoder.app.tui_widgets import FirstCoderMarkdown, _observe_markdown_update, _plain_static
+from firstcoder.app.tui_state import TuiEntryKind, TuiTaskPlanPanelState, TuiTranscript, TuiTranscriptEntry
+from firstcoder.app.tui_widgets import FirstCoderMarkdown, FirstCoderTuiConfig, _observe_markdown_update, _plain_static
 from firstcoder.app.welcome import welcome_renderable
 from firstcoder.planning.models import TaskPlan
 from firstcoder.planning.projection import project_plan
@@ -62,6 +65,50 @@ def _entry_renderable(entry: TuiTranscriptEntry, rendered: str) -> object:
 
 
 class FirstCoderViewMixin:
+    """Rendering, activity, and streaming helpers for the Textual app.
+
+    This mixin is combined with Textual's ``App`` in ``FirstCoderApp``. The
+    annotations below declare the members the concrete app subclass provides;
+    they exist so the mixin type-checks on its own.
+    """
+
+    current_session: CurrentSessionLike | None
+    chat_runner: ChatRunnerLike | None
+    config: FirstCoderTuiConfig
+    transcript: TuiTranscript
+    task_plan_panel_state: TuiTaskPlanPanelState
+    _stream_event_lock: LockType
+    _stream_event_generation: int
+    _stream_event_dispatch_scheduled: bool
+    _pending_stream_text: list[str]
+    _pending_reasoning_text: list[str]
+    _turn_started_at: float
+    _running_tool_call_ids: set[str]
+    _review_expanded_paths: set[str]
+    _stream_finalizations: dict[FirstCoderMarkdown, Any]
+    _finalized_stream_widgets: set[FirstCoderMarkdown]
+
+    STREAM_RENDER_INTERVAL_SECONDS: float
+    WORKING_ANIMATION_INTERVAL_SECONDS: float
+    WORKING_FRAMES: tuple[str, ...]
+    ACTIVITY_ANIMATION_INTERVAL_SECONDS: float
+    WELCOME_PARTICLE_INTERVAL_SECONDS: float
+    PROVIDER_GLOW_INTERVAL_SECONDS: float
+    COMPACT_WELCOME_MAX_WIDTH: int
+    COMPACT_WELCOME_MAX_HEIGHT: int
+    ACTIVITY_FRAMES: dict[str, tuple[str, ...]]
+
+    _is_current_chat_turn: Callable[[int], bool]
+    _show_activity_animation: Callable[[str, str], None]
+    _start_turn_metrics: Callable[[], None]
+    _turn_elapsed_seconds: Callable[[], float]
+
+    query_one: Any
+    call_from_thread: Any
+    call_later: Any
+    set_interval: Any
+    set_timer: Any
+    run_worker: Any
 
     def _refresh_session_subtitle(self) -> None:
         session_id = None
@@ -405,7 +452,10 @@ class FirstCoderViewMixin:
             self._start_welcome_particles()
 
     def _sync_provider_glow(self) -> None:
-        if yuren_topbar_themes.should_animate(self.config.provider_name, self.config.provider_model):
+        if yuren_topbar_themes.should_animate(
+            cast(str, self.config.provider_name),
+            cast(str, self.config.provider_model),
+        ):
             self._start_provider_glow()
         else:
             self._stop_provider_glow()
@@ -423,8 +473,8 @@ class FirstCoderViewMixin:
 
     def _advance_provider_glow(self) -> None:
         palette = yuren_topbar_themes.model_glow_palette(
-            self.config.provider_name,
-            self.config.provider_model,
+            cast(str, self.config.provider_name),
+            cast(str, self.config.provider_model),
         )
         if palette is None:
             self._stop_provider_glow()

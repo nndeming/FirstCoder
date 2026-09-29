@@ -10,7 +10,8 @@ from firstcoder.permissions.types import PermissionMode
 
 
 class PermissionSessionLike(Protocol):
-    mode: str
+    @property
+    def mode(self) -> str: ...
 
     def set_permission_mode(self, mode: PermissionMode | str) -> PermissionMode: ...
 

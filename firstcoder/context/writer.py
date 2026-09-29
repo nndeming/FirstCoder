@@ -340,7 +340,7 @@ class SessionEventWriter:
         """
 
         message_id = new_message_id()
-        metadata = {
+        metadata: dict[str, Any] = {
             "background_job_id": job_id,
             "background_tool_name": tool_name,
             "background_status": status,

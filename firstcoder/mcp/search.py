@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import cast
 
 from firstcoder.providers.types import ToolDefinition
-from firstcoder.tools.types import Tool, ToolResult, make_error_result
+from firstcoder.tools.types import Tool, ToolExecutor, ToolResult, make_error_result
 
 MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
 MCP_TOOL_SEARCH_LIMIT = 8
@@ -77,7 +78,7 @@ def create_mcp_tool_search(entries: tuple[McpSearchEntry, ...]) -> Tool:
                 "additionalProperties": False,
             },
         ),
-        executor=execute,
+        executor=cast(ToolExecutor, execute),
     )
 
 

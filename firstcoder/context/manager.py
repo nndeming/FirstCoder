@@ -38,7 +38,7 @@ ManagerStatus = Literal["success", "skipped", "failed"]
 
 
 class ProgrammaticCompactor(Protocol):
-    def compact(self, request: CompactionRequest): ...
+    def compact(self, request: CompactionRequest) -> CompactionResult: ...
 
 
 class L4Compactor(Protocol):
@@ -107,6 +107,8 @@ class ContextWindowManager:
             )
 
     def compact_if_needed(self, request: ContextCompactRequest) -> ContextCompactResult:
+        assert self.config is not None
+        assert self.pipeline is not None
         trigger = ContextWindowTrigger(request.trigger)
         mode = ContextCompactMode(request.mode)
         before_tokens = request.budget.input_tokens
@@ -264,6 +266,7 @@ class ContextWindowManager:
         l4_request: LlmCompactRequest,
         target_tokens: int,
     ) -> _CandidateOutcome:
+        assert self.l4_service is not None
         candidate = self.l4_service.generate_candidate(l4_request)
         event = candidate.event
         if event.status != "success" or candidate.checkpoint is None:
@@ -331,6 +334,8 @@ class ContextWindowManager:
         outcome: _CandidateOutcome,
         before_failure_count: int,
     ) -> ContextCompactResult:
+        assert self.pipeline is not None
+        assert self.config is not None
         reason = outcome.event.failure_reason or outcome.event.status
         action = self.fallback_policy.action_for(reason)
         steps: list[dict[str, object]] = []

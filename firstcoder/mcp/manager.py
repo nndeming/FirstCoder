@@ -9,7 +9,9 @@ import threading
 import time
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from dataclasses import replace
-from typing import Coroutine, Literal, Mapping
+from typing import Any, Coroutine, Literal, Mapping, TypeVar
+
+T = TypeVar("T")
 
 from firstcoder.mcp.config import resolve_environment_placeholders
 from firstcoder.mcp.models import McpConfigError, McpLocalServerConfig, McpRemoteServerConfig, McpServerStatus, McpToolDescription
@@ -43,7 +45,7 @@ class McpManager:
         self._thread.start()
         self._closed = False
         self._connection_thread: threading.Thread | None = None
-        self._pending_futures: set[Future[object]] = set()
+        self._pending_futures: set[Future[Any]] = set()
 
     def connect_all(self) -> None:
         """连接所有启用服务器；任何单个失败都只影响自身状态。"""
@@ -156,6 +158,7 @@ class McpManager:
 
     def _connect_one(self, config: McpServerConfig) -> None:
         self._set_status(config.name, "connecting")
+        error = "MCP 连接失败"
         for attempt in range(self._retry_attempts):
             if self._closed:
                 return
@@ -229,8 +232,8 @@ class McpManager:
         with self._lock:
             self._statuses[name] = McpServerStatus(name, state, tool_count, error)
 
-    def _submit(self, coroutine: Coroutine[object, object, object], timeout_ms: int) -> object:
-        future: Future[object] = asyncio.run_coroutine_threadsafe(self._with_timeout(coroutine, timeout_ms), self._loop)
+    def _submit(self, coroutine: Coroutine[object, object, T], timeout_ms: int) -> T:
+        future: Future[T] = asyncio.run_coroutine_threadsafe(self._with_timeout(coroutine, timeout_ms), self._loop)
         with self._lock:
             self._pending_futures.add(future)
         try:
@@ -242,7 +245,7 @@ class McpManager:
             with self._lock:
                 self._pending_futures.discard(future)
 
-    async def _with_timeout(self, coroutine: Coroutine[object, object, object], timeout_ms: int) -> object:
+    async def _with_timeout(self, coroutine: Coroutine[object, object, T], timeout_ms: int) -> T:
         return await asyncio.wait_for(coroutine, timeout=timeout_ms / 1000)
 
     @staticmethod

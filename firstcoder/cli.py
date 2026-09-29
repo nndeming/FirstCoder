@@ -165,6 +165,7 @@ def main(
         )
         try:
             app = create_cli_app(config)
+            assert app.chat_runner is not None
             lines = stdin_text.splitlines() if stdin_text is not None else None
             run_repl(app.chat_runner, lines, auto_approve=args.auto_approve)
         except Exception as exc:
@@ -205,6 +206,7 @@ def run_single_turn(config: CliConfig) -> str:
     if config.benchmark:
         return run_benchmark_turn(config)
     app = create_cli_app(config)
+    assert app.chat_runner is not None
     response = app.chat_runner.run_user_turn(
         config.message,
         attachments=_prepare_cli_attachments(config.attachments),
@@ -216,6 +218,8 @@ def run_benchmark_turn(config: CliConfig) -> str:
     """Run Harbor's non-interactive turn with benchmark-safe session settings."""
 
     app = create_cli_app(config)
+    assert app.current_session is not None
+    assert app.chat_runner is not None
     app.current_session.set_permission_mode(PermissionMode.BYPASS)
     app.current_session.session.require_prewrite_review = False
     app.current_session.session.set_benchmark_task(config.message)
@@ -246,6 +250,7 @@ def create_cli_app(config: CliConfig):
         runtime_capabilities=capabilities,
     )
     if config.max_tool_rounds is not None or config.max_turn_seconds is not None:
+        assert app.chat_runner is not None
         limits = AgentLoopLimits.default()
         if config.max_tool_rounds is not None:
             limits = limits.with_max_tool_rounds(config.max_tool_rounds)
@@ -253,6 +258,7 @@ def create_cli_app(config: CliConfig):
             limits = replace(limits, max_turn_seconds=config.max_turn_seconds)
         app.chat_runner.limits = limits
     if config.reasoning_effort is not None:
+        assert app.chat_runner is not None
         effort = config.reasoning_effort.strip()
         if not effort:
             raise ValueError("reasoning_effort must be a non-blank string")
