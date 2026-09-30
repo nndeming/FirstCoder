@@ -229,8 +229,12 @@ class AgentChatRunner:
         才会在 `use_streaming=True` 时消费 provider 的内部 stream event。
         """
 
+        # before_count: 记录本轮开始前会话里有多少条消息——本轮结束后用它切出"新增的消息"用于展示
+        # cancellation_token: 取消令牌，Esc 键可以随时打断这轮(_begin_cancellable_turn 把它登记为"当前活跃令牌")
+        # loop: 创建本轮专用的 AgentLoop 实例(agent 循环的执行容器)
         before_count, cancellation_token, loop = self._start_turn(streaming=self.use_streaming)
         try:
+            # 跨线程执行(此处使用anyio第三方异步编程库)
             result = await anyio.to_thread.run_sync(
                 _run_coroutine_in_thread,
                 loop.run_user_turn(
@@ -240,6 +244,7 @@ class AgentChatRunner:
                 ),
             )
         finally:
+            # 注销当前活跃令牌
             self._finish_cancellable_turn(cancellation_token)
         return self._finish_agent_result(before_count, loop, result)
 

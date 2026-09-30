@@ -36,3 +36,4 @@ benchmark/topic_selfplay/runs/
 *.docx
 *.docm
 ~$*.docx
+.vscode/settings.json

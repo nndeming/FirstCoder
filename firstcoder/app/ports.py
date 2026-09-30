@@ -21,6 +21,8 @@ class CommandHandlerLike(Protocol):
 
 
 class ChatRunnerLike(Protocol):
+    """注意这里Protocol, 说明这是一个'接口定义'
+    """
     @property
     def last_pending_input(self) -> UserInputRequest | None: ...
 

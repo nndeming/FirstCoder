@@ -129,9 +129,13 @@ def create_firstcoder_app(
     统一数据根。
     """
 
+    # 确定项目根目录 与 数据根目录
     project_path = Path(project_root)
     resolved_data_root = Path(data_root) if data_root is not None else project_path / ".firstcoder"
+    # 此处根据app_config || 从配置文件、.env 和系统环境变量加载应用配置
     resolved_app_config = app_config or load_config(project_root=project_path)
+
+    # 创建ModelState类
     model_state_store = ModelStateStore(resolved_data_root / "model_state.json")
     model_catalog = resolved_app_config.model_catalog()
     selected_profile: ModelProfile | None = None
@@ -144,9 +148,12 @@ def create_firstcoder_app(
             state=model_state_store.load(),
         )
         try:
+            # 创建provider实例(不同模型厂商不一样, 也可兼容OpenAI)
             provider = create_provider_for_model(resolved_app_config, selected_profile)
         except ProviderConfigError as error:
             raise ValueError(str(error)) from error
+
+    # 任务边界分类模型
     classifier_provider: ChatProvider | None = None
     classifier_request_options: MainRequestOptions | None = None
     classifier_model_ref = resolved_app_config.get_config_value("task_boundary_classifier_model")
@@ -162,16 +169,22 @@ def create_firstcoder_app(
         except ProviderConfigError as error:
             raise ValueError(f"任务边界分类模型配置错误：{error}") from error
         classifier_request_options = _main_request_options(classifier_profile)
-    store = JsonlSessionStore(resolved_data_root)
-    sandbox_access = SandboxAccess()
-    background_manager = BackgroundJobManager()
+    
+    store = JsonlSessionStore(resolved_data_root)   # 会话持久化(JSONL 追加写)
+    sandbox_access = SandboxAccess()                # 文件系统沙箱访问控制
+    background_manager = BackgroundJobManager()     # 后台任务(子进程等)管理
+    # 所能使用的能力
     resolved_capabilities = runtime_capabilities or AgentRuntimeCapabilities.interactive()
     if allow_user_input is not None:
         resolved_capabilities = replace(
             resolved_capabilities,
             allow_user_input=allow_user_input,
         )
+
+    # 进程管理 + 日志
     process_manager = ProcessManager(log_root=resolved_data_root / "processes")
+
+    # 内置工具
     resolved_tools = (
         tools
         if tools is not None
@@ -189,6 +202,8 @@ def create_firstcoder_app(
             ),
         ).tools()
     )
+
+    # 异步连接mcp
     mcp_manager = (mcp_manager_factory or McpManager)(load_mcp_configs(resolved_app_config))
     try:
         mcp_manager.connect_all_in_background()
@@ -197,6 +212,8 @@ def create_firstcoder_app(
     tool_provider = McpToolProvider(resolved_tools, mcp_manager, include_mcp=tools is None)
     current_tools = tool_provider()
     resolved_provider = provider
+
+    # 会话生命周期管理
     bootstrap = SessionBootstrap(
         store=store,
         project_root=project_path,
@@ -210,6 +227,8 @@ def create_firstcoder_app(
         else bootstrap.from_project(session_id=session_id)
     )
     current = CurrentSessionState(session)
+
+    # 上下文管理
     compact_summarizer = ProviderLlmCompactSummarizer(resolved_provider)
     context_manager = ContextWindowManager(
         store=store,
@@ -255,6 +274,8 @@ def create_firstcoder_app(
     permission_handler = PermissionCommandHandler(session=current)
     skill_catalog_provider = lambda: discover_all_skills(project_path)
     skill_handler = SkillCommandHandler(catalog_provider=skill_catalog_provider)
+
+    # 核心装配
     chat_runner = AgentChatRunner(
         current_session=current,
         provider=resolved_provider,

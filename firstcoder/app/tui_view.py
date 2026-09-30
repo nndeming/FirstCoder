@@ -241,27 +241,34 @@ class FirstCoderViewMixin:
 
         def handle_event(event) -> None:
             if previous_handler is not None:
+                # 先把事件交给旧的handler执行一次, 接着继续往下执行
                 previous_handler(event)
             if token is not None and not self._is_current_chat_turn(token):
+                # 携带的token不是本轮对话的, 丢弃
                 return
             tool_call = getattr(event, "tool_call", None)
             tool_name = str(getattr(tool_call, "name", "") or "tool")
             if tool_name in HIDDEN_TOOL_STATUS_NAMES:
+                # 内部工具不显示, 对模型有效, 对人是噪音
                 return
             if str(getattr(event, "kind", "") or "") == "prewrite_review":
+                # 特殊逻辑
+                # 写文件前的预审查: 将审查内容整体写给界面
                 review = getattr(event, "prewrite_review", None)
                 if isinstance(review, dict):
                     self._call_ui_thread(self._write_review_payload, review)
                 return
-            line = tool_status_text(event)
+            
+            # 普通事件, 渲染成界面动作
+            line = tool_status_text(event)  # 把事件压成一行可读文本
             if not line:
                 return
-            self._live_tool_events_seen = True
-            self._call_ui_thread(self._close_stream_segment_for_tool)
-            self._call_ui_thread(self._record_tool_activity, event)
+            self._live_tool_events_seen = True  # 标记"这轮有工具活动"
+            self._call_ui_thread(self._close_stream_segment_for_tool)   # 收尾流式文本段
+            self._call_ui_thread(self._record_tool_activity, event)     # 记活动(状态栏用)
             if tool_name in {"task_create", "task_update", "task_revise"} and str(getattr(event, "kind", "") or "") == "finished":
-                self._call_ui_thread(self._refresh_task_plan_panel_from_current_session)
-            self._call_ui_thread(
+                self._call_ui_thread(self._refresh_task_plan_panel_from_current_session)    # todo面板刷新
+            self._call_ui_thread(   # 真正把行画到屏幕
                 self._write_line,
                 line,
                 kind=tool_event_entry_kind(event),

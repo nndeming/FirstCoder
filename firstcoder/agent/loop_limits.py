@@ -16,9 +16,9 @@ class AgentLoopStopReason(StrEnum):
 class AgentLoopLimits:
     """Configurable guardrails for one user turn."""
 
-    max_tool_rounds: int | None = 200
-    max_provider_calls: int | None = 400
-    max_turn_seconds: float | None = 3600
+    max_tool_rounds: int | None = 200       # 工具调用轮次上限
+    max_provider_calls: int | None = 400    # 模型API调用次数上限
+    max_turn_seconds: float | None = 3600   # 单回合墙钟时间上限(总耗时)
 
     @classmethod
     def default(cls) -> "AgentLoopLimits":

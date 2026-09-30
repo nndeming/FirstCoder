@@ -9,7 +9,10 @@ from dataclasses import dataclass, field
 @dataclass(slots=True)
 class CancellationToken:
     """Small thread-safe cancellation flag shared by UI, loop, and tools."""
-
+    # 语义上相当于 Java 的 volatile: 本类只依赖其 "可见性" --
+    # 一个线程 cancel() 之后, 其他线程 is_set() 必能读到最新值.
+    # 实现上 Event 内部是锁 (比 volatile 重, 还附带原子性与 wait 能力),
+    # 但本项目是纯写/纯读, 无复合操作, 恰好只需可见性.
     _event: threading.Event = field(default_factory=threading.Event)
 
     def cancel(self) -> None:

@@ -1047,6 +1047,15 @@ class AgentLoop:
         self._emit_settlements("interrupted", self.tool_settlement.append_interrupted_tail())
 
     def _repair_interrupted_tool_calls_before_provider_request(self) -> None:
+        """调模型前的对账: 补齐上一轮被打断留下的悬空 tool_call
+
+        Esc 取消 / 轮次超时 / 异常崩溃可能让日志尾部出现"有 tool_call、无
+        tool_result"的残缺序列, 直接发给 provider 会消息非法. 这里为每个孤儿
+        调用补写一条"结果未知"的中断记录, 恢复"每个 tool_call 必有配对结果"
+        的不变量. 权限暂停造成的悬空不在此列——那是合法的在途交易, 由
+        resume_with_user_input 补齐, 此处会跳过.
+        """
+
         self._emit_settlements("interrupted", self.tool_settlement.repair_before_provider_request())
 
     def _emit_settlements(self, kind, settlements) -> None:
@@ -1073,6 +1082,8 @@ class AgentLoop:
     ) -> None:
         if self.tool_event_handler is None:
             return
+        # tool_event_handler是一个函数, 在firstcoder\app\tui_view.py被初始化
+        # 这里实际是调用函数(因为带了括号)
         self.tool_event_handler(
             ToolExecutionEvent(
                 kind=kind,
@@ -1343,7 +1354,12 @@ class AgentLoop:
         )
 
     def _begin_turn(self, *, new_user_turn: bool = True) -> None:
+        """轮次状态处理\n\n
+        * 新对话: 清空
+        * 权限确认暂停后恢复: 不清空
+        """
         if new_user_turn:
+            # 新对话
             self._active_mcp_tool_names.clear()
             self.provider_call_count = 0
             self.turn_started_at = self.clock()
@@ -1359,6 +1375,8 @@ class AgentLoop:
                 started_at=self.telemetry_started_at,
             )
         elif not self.turn_telemetry.active:
+            # 当遇到权限确认而暂停时, 用户的回复(选择权限)并不意味着新一轮对话
+            # 因此权限确认后的恢复并不能清空当前AgentLoop
             self.turn_started_at = self.clock()
             self.telemetry_started_at = self.telemetry_clock()
             self.turn_telemetry.begin(
@@ -1571,6 +1589,8 @@ class AgentLoop:
         return self.cancellation_token is not None and self.cancellation_token.is_cancelled
 
     def _check_cancelled(self) -> None:
+        """判断当前Token是否被取消
+        """
         if self.cancellation_token is not None:
             self.cancellation_token.raise_if_cancelled()
 

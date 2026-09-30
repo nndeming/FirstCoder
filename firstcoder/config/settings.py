@@ -141,16 +141,17 @@ def load_config(
 
 def default_global_config_path() -> Path:
     """返回当前平台的全局 FirstCoder 配置路径。"""
-
+    # Linux 桌面配置规范
     config_home = os.getenv("XDG_CONFIG_HOME")
     if config_home:
         return Path(config_home) / "firstcoder" / "config.toml"
+    # 一般情况下win都走这个路径
     return Path.home() / ".config" / "firstcoder" / "config.toml"
 
 
 def project_config_path(project_root: Path | str | None = None) -> Path:
     """返回项目级配置文件路径。"""
-
+    # os.getcwd() 获取当前工作目录 .resolve() 将相对路径转为绝对路径
     return Path(project_root or os.getcwd()).resolve() / PROJECT_CONFIG_NAME
 
 
