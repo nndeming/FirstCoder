@@ -271,6 +271,7 @@ class AgentLoop:
         message_id = self.session.append_user_message(content, attachments=attachments)
         try:
             if self._initialize_active_task_if_missing(message_id) is None:
+                # 已经有任务了, 用分类模型判断一下这次对话是否是新的任务
                 self._classify_task_boundary(message_id)
         except _AgentLoopLimitReached as exc:
             return self._complete_turn(self._limit_response(exc.reason))
@@ -406,6 +407,9 @@ class AgentLoop:
         return result
 
     def _initialize_active_task_if_missing(self, basis_message_id: str):
+        """若尚无进行中的任务, 则以该用户消息为起点自动建立首个任务。\n\n
+        * 任务: 一段目标一致的连续对话
+        """
         service = TaskBoundaryService(known_message_ids=self.session.known_message_ids)
         observation = service.initialize_active_task(self.session.runtime_state, basis_message_id=basis_message_id)
         if observation is not None:
@@ -414,6 +418,8 @@ class AgentLoop:
         return observation
 
     def _classify_task_boundary(self, basis_message_id: str) -> None:
+        """发起隐藏的分类调用, 判断该消息是否开启新任务, 并将结果记入任务边界状态机。"""
+
         self.task_boundary_classifier.classify(basis_message_id)
 
     async def _classify_task_boundary_async(self, basis_message_id: str) -> None:
@@ -602,7 +608,7 @@ class AgentLoop:
     ) -> ChatResponse:
         """构造一次 provider 请求并获得模型响应。
 
-        这一步只负责“问模型一次”，不处理工具循环。拆开后，同步调用、streaming 调用、
+        这一步只负责“问模型一次”, 不处理工具循环。拆开后, 同步调用、streaming 调用、
         prompt-too-long 恢复都可以复用同一套上下文构造逻辑。
         """
 
@@ -631,10 +637,10 @@ class AgentLoop:
         tool_choice="auto",
         runtime_instruction: str | None = None,
     ) -> ChatResponse:
-        """同步模式下一次 provider 调用，并处理 prompt-too-long 的单次恢复。
+        """同步模式下一次 provider 调用, 并处理 prompt-too-long 的单次恢复
 
-        provider 如果拒绝请求，说明 assistant 回复还没有产生，也就没有新消息要落库。
-        这时可以先触发 blocking compact，再重建 provider messages 重试一次。
+        provider 如果拒绝请求, 说明 assistant 回复还没有产生, 也就没有新消息要落库。
+        这时可以先触发 blocking compact, 再重建 provider messages 重试一次。
         """
 
         transient_retries = 0
@@ -770,25 +776,34 @@ class AgentLoop:
         """核心工具循环：问模型，执行工具，再把工具结果回喂给模型。
 
         退出条件只有三类：
-        - 模型返回的 response 没有 tool_calls：说明它已经给出最终回答。
-        - 命中 max_tool_rounds：防止模型无限调用工具。
+        - 模型返回的 response 没有 tool_calls: 说明它已经给出最终回答。
+        - 命中 max_tool_rounds: 防止模型无限调用工具。
         - 某个工具需要用户输入或权限确认：暂停并把 pending_input 交给 UI。
         """
 
         guardrail_stop = False
         try:
+            # 工具调用上限校验
             if self.max_tool_rounds is not None and self._tool_rounds_completed >= self.max_tool_rounds:
                 return self._complete_turn(self._limit_response(AgentLoopStopReason.TOOL_ROUND_LIMIT))
+
+            # 第一次调用模型, 获取模型回复, 判断是否需要进入工具循环
             response = self._drop_unsupported_tool_calls(complete_once(tool_choice=initial_tool_choice))
             tool_rounds = self._tool_rounds_completed
+
+            # 主循环
             response, pending_input, tool_rounds = self._continue_tool_loop_from_response(
                 response,
                 complete_once,
                 tool_rounds,
             )
+
+            # 需要用户拍板
             if pending_input is not None:
                 return self._pending_turn_result(pending_input)
+            
             if response.finish_reason != AgentLoopStopReason.TOOL_ROUND_LIMIT.value:
+                # 任务清单对账: 模型建的 todo 清单和实际执行是否一致
                 response, pending_input, tool_rounds = self._run_task_plan_reconciliation_if_needed(
                     response,
                     complete_once,
@@ -796,6 +811,8 @@ class AgentLoop:
                 )
                 if pending_input is not None:
                     return self._pending_turn_result(pending_input)
+
+                # 完成闸门: 防止模型"嘴上说做完其实没做完"
                 response, pending_input, _ = self._run_completion_gate_if_needed(
                     response,
                     complete_once,
@@ -810,16 +827,16 @@ class AgentLoop:
             self._append_interrupted_tool_results()
             response = self._interrupted_response()
 
-        if self._is_cancelled():
+        if self._is_cancelled():    # 取消: 中断回复
             self._append_interrupted_tool_results()
             response = self._interrupted_response()
             return self._complete_turn(response)
-        if guardrail_stop:
+        if guardrail_stop:          # 限额: 限流说明
             return self._complete_turn(response)
 
-        # 没有工具调用时，这条 response 就是最终 assistant 回复。命中轮次上限时也会写入
-        # 一条纯文本说明，避免保存未执行的 tool_call。
-        return self._complete_turn(response)
+        # 没有工具调用时, 这条 response 就是最终 assistant 回复. 命中轮次上限时也会写入
+        # 一条纯文本说明, 避免保存未执行的 tool_call
+        return self._complete_turn(response)    # 正常：最终回复
 
     async def _run_tool_loop_interactive_async(self, complete_once, *, initial_tool_choice="auto") -> AgentTurnResult:
         """streaming 版本的工具循环，语义与同步版本一致。"""
@@ -900,6 +917,16 @@ class AgentLoop:
         complete_once,
         tool_rounds: int,
     ) -> tuple[ChatResponse, UserInputRequest | None, int]:
+        """从已有模型回复出发, 循环执行工具调用并把结果回喂模型, 直到模型给出最终答复。
+
+        入参:
+        - `response`: 当前模型回复, 其中的 tool_calls 决定是否进入循环;
+        - `complete_once`: 调用大模型的函数(策略参数, 由调用方注入), 返回新的 ChatResponse;
+        - `tool_rounds`: 已完成的工具轮次数, 用于校验上限。
+
+        返回三元组: (最终模型回复, 需用户输入的请求(权限确认等, 无则为 None), 工具轮次数)。
+        """
+
         while response.tool_calls:
             self._check_cancelled()
             if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
@@ -1080,10 +1107,23 @@ class AgentLoop:
         permission_request: PermissionRequest | None = None,
         prewrite_review: dict[str, object] | None = None,
     ) -> None:
+        """把工具执行节点广播给订阅方(UI)。
+
+        将 kind 及对应载荷打包成 ToolExecutionEvent, 调用注入的 tool_event_handler;
+        无订阅方时静默跳过。kind 取值:
+        - prewrite_review: 写入类工具执行前的预检(展示 diff 给用户);
+        - started: 开始执行; finished: 执行完毕(带 result);
+        - permission_requested: 卡在权限确认(带 permission_request);
+        - denied: 被拒(校验失败/隐藏工具/权限拒绝);
+        - skipped: 本轮被跳过(前面已有 pending);
+        - interrupted: 被 Esc/超时打断;
+        - background_started: 转入后台执行。
+        """
+
         if self.tool_event_handler is None:
             return
-        # tool_event_handler是一个函数, 在firstcoder\app\tui_view.py被初始化
-        # 这里实际是调用函数(因为带了括号)
+        # tool_event_handler 是注入的回调函数, 由 firstcoder/app/tui_view.py 在每轮对话开始时安装
+        # 带括号即调用该函数, 把事件对象作为入参传给它
         self.tool_event_handler(
             ToolExecutionEvent(
                 kind=kind,
@@ -1529,6 +1569,8 @@ class AgentLoop:
             raise _AgentLoopLimitReached(AgentLoopStopReason.PROVIDER_CALL_LIMIT)
 
     def _reserve_provider_call(self) -> None:
+        """provider 调用前的预算检票口: 超限抛异常, 通过则预扣额度并记录遥测。"""
+
         self._check_provider_call_limit()
         self.provider_call_count += 1
         self.turn_telemetry.observe_provider_call()
@@ -1597,7 +1639,7 @@ class AgentLoop:
     def _drop_unsupported_tool_calls(self, response: ChatResponse) -> ChatResponse:
         """兜底保护：不支持工具的 provider 理论上不该返回 tool_calls。
 
-        如果兼容站行为异常仍返回了 tool_calls，这里把它们丢弃并记录 diagnostics，避免
+        如果兼容站行为异常仍返回了 tool_calls, 这里把它们丢弃并记录 diagnostics, 避免
         agent 执行一个 provider 能力声明之外的工具链。
         """
 

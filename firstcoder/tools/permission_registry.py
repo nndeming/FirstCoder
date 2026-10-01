@@ -65,11 +65,19 @@ class PermissionAwareToolRegistry:
         name: str,
         arguments: dict[str, Any] | str | None = None,
     ) -> tuple[Tool, dict[str, Any], PermissionRequest, PermissionDecision] | None:
-        """只做权限预检，不执行工具。
+        """只做权限预检, 不执行工具。
 
-        agent loop 需要在 `ASK` 时先暂停，而不是把“权限确认”伪装成 provider
-        tool_result 写入历史；因此这里把预检能力暴露出来，方便上层保存 pending
-        tool_call，等用户选择后再写入唯一的最终 tool_result。
+        agent loop 需要在 `ASK` 时先暂停, 而不是把“权限确认”伪装成 provider
+        tool_result 写入历史; 因此这里把预检能力暴露出来, 方便上层保存 pending
+        tool_call, 等用户选择后再写入唯一的最终 tool_result。
+
+        返回 None: 该调用不归权限系统管(工具不存在/参数非 dict/无权限声明),
+        上层按原逻辑直接执行。
+        返回四元组 (tool, arguments, request, decision):
+        - `tool`: 被预检的工具对象;
+        - `arguments`: 规整后的参数(dict);
+        - `request`: 从工具声明+参数提取的权限请求(动作/目标/理由);
+        - `decision`: 权限结论, ALLOW / DENY / ASK(参数残缺时合成为 DENY)。
         """
 
         tool = self.registry.get(name)
@@ -84,6 +92,7 @@ class PermissionAwareToolRegistry:
         if tool.permission is None:
             return None
 
+        # 构造权限请求
         try:
             request = permission_request_for_tool(tool, arguments)
         except ValueError as exc:
@@ -96,6 +105,8 @@ class PermissionAwareToolRegistry:
             )
             decision = PermissionDecision(kind=PermissionDecisionKind.DENY, reason=str(exc))
             return tool, arguments, request, decision
+
+        # 交给权限管理器裁决
         request = self.permission_manager.normalize_request(request)
         decision = self.permission_manager.preflight(request)
         return tool, arguments, request, decision

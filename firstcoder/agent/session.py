@@ -436,7 +436,7 @@ class AgentSession:
     def preflight_tool_call_permission(self, tool_call: ToolCall) -> ToolPermissionPreflight | None:
         """对工具调用做权限预检，但不执行工具。
 
-        只有权限 wrapper 支持这个能力；无权限声明的工具返回 `None`，由旧执行路径
+        只有权限 wrapper 支持这个能力; 无权限声明的工具返回 `None`, 由旧执行路径
         直接处理。这样权限系统接入不会污染普通工具的执行模型。
         """
 

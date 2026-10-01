@@ -35,11 +35,13 @@ def utc_now_iso() -> str:
 
 @dataclass(slots=True)
 class MessagePart:
-    id: str
-    message_id: str
-    kind: PartKind | str
-    content: str
-    metadata: dict[str, Any] = field(default_factory=dict)
+    """一条消息(`AgentMessage`)内部的"最小内容单元"
+    """
+    id: str                 # Part的编号
+    message_id: str         # 归属的消息ID
+    kind: PartKind | str    # 类型
+    content: str            # 正文(文本/JSON/占位符)
+    metadata: dict[str, Any] = field(default_factory=dict)  # 附加信息
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "MessagePart":

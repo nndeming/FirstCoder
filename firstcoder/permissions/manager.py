@@ -43,9 +43,11 @@ class PermissionManager:
 
     def preflight(self, request: PermissionRequest) -> PermissionDecision:
         request = self.normalize_request(request)
+        # 查找用户历史授权
         grant_decision = self.grants.matching_decision(request)
         if grant_decision is not None:
             return grant_decision
+        # 按照策略+模式现场判断
         return self.policy.decide(request, mode=self.mode)
 
     def build_confirmation(self, request: PermissionRequest) -> UserInputRequest:

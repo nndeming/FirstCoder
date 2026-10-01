@@ -118,21 +118,32 @@ class OpenAICompatibleProvider(ChatProvider):
         return dict(self._extra_body)
 
     def complete(self, request: ChatRequest) -> ChatResponse:
-        """调用 Chat Completions，并转换成项目内部统一响应。"""
+        """调用 Chat Completions, 并转换成项目内部统一响应。"""
 
         params = self._build_completion_params(request)
         try:
+            # 调用OpenAI官方SDK
             response = self._client.chat.completions.create(**params)
         except Exception as exc:
             message = str(exc)
             raise ProviderError(classify_provider_exception(exc), message) from exc
+
+        # 获取message和raw_finish_reason(此处为防御性编程)
         choice = _read_field(response, "choices", [])[0]
         message = _read_field(choice, "message")
         raw_finish_reason = _read_field(choice, "finish_reason")
+
+        # 标准化finish_reason
         finish_reason = _normalize_finish_reason(raw_finish_reason)
+
+        # 记录诊断信息
         diagnostics = ProviderDiagnostics(raw_finish_reason=raw_finish_reason)
         diagnostics.reasoning = _read_reasoning_delta(message) or None
+
+        # 获取工具调用情况
         tool_calls = self._parse_tool_calls(_read_field(message, "tool_calls", []) or [], diagnostics=diagnostics)
+
+        # 特殊情况判断
         if finish_reason == "length" and tool_calls:
             # length 表示模型输出被截断。此时即使 SDK 对象里出现了 tool_calls，也可能只是
             # 半截 JSON 参数；为了避免执行危险的半截工具调用，整组丢弃并写 diagnostics。

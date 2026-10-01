@@ -127,7 +127,7 @@ def strip_background_controls(arguments: Any) -> tuple[dict[str, Any], bool, str
 
 
 def has_background_control_fields(arguments: Any) -> bool:
-    """判断参数里是否带有任一控制面字段（不管真假值）。"""
+    """判断参数里是否带有任一控制面字段(不管真假值)。"""
 
     return isinstance(arguments, dict) and any(key in arguments for key in BACKGROUND_CONTROL_ARGS)
 

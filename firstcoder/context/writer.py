@@ -40,6 +40,8 @@ class SessionEventWriter:
         self.current_turn = current_turn
 
     def append_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        """将`message`追加写入至`.firstcoder/sessions/<session_id>.jsonl`
+        """
         self.store.append_event(
             SessionEvent(
                 id=new_event_id(),
@@ -110,6 +112,8 @@ class SessionEventWriter:
         metadata: dict[str, Any] | None = None,
         part_metadata: dict[str, Any] | None = None,
     ) -> str:
+        """将`message`追加写入至`.firstcoder/sessions/<session_id>.jsonl`
+        """
         self.current_turn += 1
         message_id = new_message_id()
         parts = [

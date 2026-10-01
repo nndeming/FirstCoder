@@ -137,18 +137,23 @@ class ToolExecutor:
         """执行一个 response 里的全部 tool_calls。
 
         默认顺序执行。只读探查工具在当前权限允许时可以同批并行，减少等待。
-        一旦某个工具返回 pending user input，本轮剩余工具会跳过。
+        一旦某个工具返回 pending user input, 本轮剩余工具会跳过。
         """
 
         state = ToolExecutionState()
-        # 先一次性把控制面字段（run_in_background/background_label）从每个 tool_call 里剥掉，
-        # executor 永远看不到它们。没有控制字段时归一化结果与原 tool_call 完全等价，普通
-        # 路径行为不变；后台请求信息按 tool_call_id 单独记录，供本轮调度使用。
+        # 先一次性把控制面字段(run_in_background/background_label)从每个 tool_call 里剥掉,
+        # executor 永远看不到它们。没有控制字段时归一化结果与原 tool_call 完全等价,普通
+        # 路径行为不变; 后台请求信息按 tool_call_id 单独记录, 供本轮调度使用。
+        # tool_calls: 标准化后的所有工具调用
+        # self._background_request: 需要后台执行的工具调用, 是tool_calls的子集
         tool_calls, self._background_request = self._normalize_background_controls(tool_calls)
         index = 0
         while index < len(tool_calls):
             self._check_cancelled()
             tool_call = tool_calls[index]
+
+            # firstcoder\agent\loop.py中_validate_tool_call()
+            # MCP 工具激活校验 + 运行时可见性 + 停滞守卫
             validation_error = (
                 self._validate_tool_call(tool_call)
                 if self._validate_tool_call is not None
@@ -159,7 +164,10 @@ class ToolExecutor:
                 self._record_result(tool_call, validation_error, state=state)
                 index += 1
                 continue
+
             if tool_call.name in HIDDEN_TOOL_STATUS_NAMES:
+                # task_boundary是专门给分类器的工具, 用于判断用户输入属于当前任务还是新的任务
+                # 不允许主模型使用
                 result = make_error_result(
                     tool_call.name,
                     f"内部控制面工具不可由主模型调用：{tool_call.name}",
@@ -168,6 +176,7 @@ class ToolExecutor:
                 self._record_result(tool_call, result, state=state)
                 index += 1
                 continue
+
             permission = self._prepare_permission(tool_call, tool_calls[index + 1 :])
             if permission.result is not None:
                 self._emit_event(
@@ -188,7 +197,7 @@ class ToolExecutor:
                 state.pending_input = permission.pending_input
                 return state
 
-            # 权限已放行（ALLOW 或无预检）。此时才允许把请求转入后台，确保绝不后台执行
+            # 权限已放行(ALLOW 或无预检)。此时才允许把请求转入后台, 确保绝不后台执行
             # 需要用户确认的工具。
             if tool_call.id in self._background_request:
                 label, task_id = self._background_request[tool_call.id]
@@ -236,22 +245,46 @@ class ToolExecutor:
         self,
         tool_calls: list[ToolCall],
     ) -> tuple[list[ToolCall], dict[str, tuple[str | None, str | None]]]:
-        """Strip control-plane fields once and record which calls asked for background.
+        """执行前剥离后台控制字段, 并登记哪些调用要求后台执行。
 
-        Returns cleaned tool calls (executor-visible args only) plus a map from
-        tool_call_id to the requested background label.  Calls without control
-        fields are returned unchanged, so the ordinary path is unaffected.
+        run_in_background/background_label/background_task_id 三个字段是本项目注入工具 schema
+        的调度暗号(非 OpenAI 协议字段), 由模型回填进 arguments。工具实现不认识它们,
+        且是否走后台由调度层按 tool_call_id 查表决定, 所以执行前必须剥离并单独登记:
+        - `cleaned`: 剥离控制字段后的工具调用, 交给 Executor 执行;
+        - `requested`: {tool_call_id: (label, task_id)}, 只含要求后台执行的调用。
+        无控制字段的调用原样返回, 普通路径行为不变。
+
+        示例: 输入两个调用, call_1 带控制字段且要求后台, call_2 无控制字段:
+
+            输入:
+                ToolCall(id="call_1", name="Bash", arguments={
+                    "command": "npm run build",
+                    "run_in_background": True,      # 模型要求后台执行
+                    "background_label": "构建",    # 模型给后台任务起的名
+                })
+                ToolCall(id="call_2", name="Read", arguments={"path": "README.md"})
+
+            输出:
+                cleaned = [
+                    ToolCall(id="call_1", name="Bash", arguments={"command": "npm run build"}),
+                    ToolCall(id="call_2", name="Read", arguments={"path": "README.md"}),   # 原样放行
+                ]
+                requested = {"call_1": ("构建", None)}   # 仅登记要求后台的调用
         """
 
         cleaned: list[ToolCall] = []
         requested: dict[str, tuple[str | None, str | None]] = {}
         for tool_call in tool_calls:
             if not has_background_control_fields(tool_call.arguments):
+                # 无控制字段: 原样放行, 不登记后台请求
                 cleaned.append(tool_call)
                 continue
+            # 有控制字段: 拆出 (净化参数, 是否后台, 标签, 关联任务ID)
             clean_args, run_in_background, label, task_id = strip_background_controls(tool_call.arguments)
+            # Executor 只收到净化后的业务参数, 永远看不到控制字段
             cleaned.append(ToolCall(id=tool_call.id, name=tool_call.name, arguments=clean_args))
             if run_in_background:
+                # 仅登记要求后台的调用, 供执行循环按 tool_call_id 分流到 _dispatch_background
                 requested[tool_call.id] = (label, task_id)
         return cleaned, requested
 
@@ -419,11 +452,15 @@ class ToolExecutor:
         tool_call: ToolCall,
         skipped_tool_calls: list[ToolCall],
     ) -> _PermissionPreparation:
-        """Resolve preflight outcomes before any local tool side effect."""
+        """工具执行前的权限分流: 按预检结论放行, 拒行或挂起问用户, 确保副作用发生前有明确决策。"""
 
         preflight = self.session.preflight_tool_call_permission(tool_call)
+
+        # 放行
         if preflight is None:
             return _PermissionPreparation()
+
+        # 判定为拒绝
         if preflight.decision.kind == PermissionDecisionKind.DENY:
             return _PermissionPreparation(
                 result=make_permission_denied_result(
@@ -433,6 +470,9 @@ class ToolExecutor:
                 ),
                 permission_request=preflight.request,
             )
+
+        # 挂起问用户
+        # review_only: 写入类工具执行前必须先把 diff 展示给用户确认
         review_only = preflight.decision.kind == PermissionDecisionKind.ALLOW and self.requires_prewrite_review(tool_call)
         if preflight.decision.kind == PermissionDecisionKind.ASK or review_only:
             pending = self.store_pending_permission_request(
@@ -444,6 +484,8 @@ class ToolExecutor:
             if isinstance(pending, ToolResult):
                 return _PermissionPreparation(result=pending, permission_request=preflight.request)
             return _PermissionPreparation(pending_input=pending, permission_request=preflight.request)
+
+        # 放行(有审计)
         return _PermissionPreparation(
             result=self._prepare_bypass_mutation(tool_call, preflight=preflight),
             permission_request=preflight.request,
@@ -457,11 +499,16 @@ class ToolExecutor:
         state: ToolExecutionState,
         skipped_tool_calls: list[ToolCall] | None = None,
     ) -> UserInputRequest | None:
+        """统一记录工具结果: 观察器补充后落库, 若请求用户输入则挂起本轮, task_boundary 换任务时立旗触发压缩。"""
+
         # 观察器可以在事实落库前给结果补充一次性 agent guidance；执行成功/失败本身
         # 仍由原始 ToolResult 决定，观察器不得绕过权限或再次执行工具。
         if self._observe_tool_result is not None:
             self._observe_tool_result(tool_call, result)
+
+        # 落盘
         self.session.append_tool_result(tool_call=tool_call, result=result)
+
         pending_input = user_input_request_from_tool_result(
             result,
             tool_call_id=tool_call.id,
@@ -470,6 +517,8 @@ class ToolExecutor:
         if pending_input is not None:
             self._emit_settlements("skipped", self.settlement.append_skipped(skipped_tool_calls or []))
             return pending_input
+
+        # task_boundary特判
         if tool_call.name == "task_boundary" and result.ok and result.data.get("should_trigger_compaction"):
             self._tag_task_boundary_messages(result.data)
             state.task_hash_changed = True
