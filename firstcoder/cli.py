@@ -478,6 +478,7 @@ def run_repl(
 ) -> None:
     # 注意if部分实际上只在部分test场景下被使用(涉及到直接往main函数传参)
     # 正常使用的话走的是else分支的 _stdin_lines()
+    # _stdin_lines()是带yield的函数, source此处只是获得了generator
     source = iter(lines) if lines is not None else _stdin_lines()
     pending = None
     for raw_line in source:
@@ -488,6 +489,9 @@ def run_repl(
         if line in {"/exit", "/quit"}:
             break
 
+        # 整个 REPL 是一个大循环, 上一轮可能没跑完就被挂起了(pending 不为 None):
+        # 要么卡在权限确认, 要么某个工具在反问用户。这时不能开新一轮,
+        # 要把用户这行的输入当作"回答", 走 resume_with_user_input 从断点继续。
         if pending is not None:
             if _pending_kind(pending) == "permission_confirmation":
                 # 获取用户选择的权限

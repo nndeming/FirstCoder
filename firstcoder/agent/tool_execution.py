@@ -201,6 +201,7 @@ class ToolExecutor:
             # 需要用户确认的工具。
             if tool_call.id in self._background_request:
                 label, task_id = self._background_request[tool_call.id]
+                # 后台执行工具调用
                 result = self._dispatch_background(
                     tool_call,
                     label=label,
@@ -210,13 +211,18 @@ class ToolExecutor:
                 index += 1
                 continue
 
+            # 当前工具可并行执行
             if self.can_execute_in_parallel(tool_call):
+                # 贪心: 从当前位置向后扫描, 把连续一段都能并行的都用收成一批
                 batch_end = self.parallel_readonly_batch_end(tool_calls, index)
+                # 此处的batch就是连续一段能并行的工具
                 batch = tool_calls[index:batch_end]
                 if len(batch) == 1:
+                    # 如果仅有1个工具支持并行, 就没有开线程池的必要了
                     result = self.execute_single(batch[0])
                     self._record_result(batch[0], result, state=state)
                 else:
+                    # 并发执行, 结果按原顺序回收
                     results = self.execute_parallel_readonly_batch(batch)
                     for batch_tool_call, result in zip(batch, results, strict=True):
                         self._record_result(batch_tool_call, result, state=state)
@@ -228,6 +234,10 @@ class ToolExecutor:
                 tool_call,
                 result,
                 state=state,
+                # 走到这里的基本是变更类工具, 其中可能夹着需要反问用户的工具(如 AskUserQuestion)。
+                # 若当前工具要反问用户, 本轮立即暂停, 排在它后面的调用不再执行;
+                # 把后面的尾巴传进去, 由 _record_result 为它们各补一条"已跳过"的错误结果,
+                # 保证历史中每个 tool_call 都有配对的 tool_result。
                 skipped_tool_calls=tool_calls[index + 1 :],
             )
             if pending_input is not None:
@@ -525,23 +535,33 @@ class ToolExecutor:
         return None
 
     def parallel_readonly_batch_end(self, tool_calls: list[ToolCall], start: int) -> int:
+        """从 start 开始向后收集连续的可并行调用, 返回批次结束下标(开区间, 即批内范围为 `[start, end)`)。"""
+
         end = start
         while end < len(tool_calls) and self.can_execute_in_parallel(tool_calls[end]):
             end += 1
         return end
 
     def can_execute_in_parallel(self, tool_call: ToolCall) -> bool:
+        """判断该工具调用能否加入并行只读批次: 白名单内且权限预检放行, 不阻塞的调用才能并发执行。"""
+
         if self.requires_bypass_prewrite_review(tool_call):
             return False
         if tool_call.id in self._background_request:
             # 请求后台化的调用不能被并行只读批次吞掉；它要走单独的后台调度分支。
+            # 要求后台调用的工具就不在这里并行了
             return False
         if tool_call.name not in self.parallel_tool_names_for_current_mode():
+            # 当前工具不在 可并行白名单 内
             return False
+
+        # 再做一次权限校验
         preflight = self.session.preflight_tool_call_permission(tool_call)
         return preflight is None or preflight.decision.kind == PermissionDecisionKind.ALLOW
 
     def parallel_tool_names_for_current_mode(self) -> frozenset[str]:
+        """返回当前权限模式下允许并行执行的工具白名单: BYPASS 用宽集合, 其余模式用纯只读集合。"""
+
         if self.session.permission_manager is not None and self.session.permission_manager.mode == PermissionMode.BYPASS:
             return BYPASS_PARALLEL_TOOL_NAMES
         return PARALLEL_READONLY_TOOL_NAMES
@@ -551,13 +571,15 @@ class ToolExecutor:
         return self.session.require_prewrite_review and (manager is None or manager.mode != PermissionMode.BYPASS) and supports_prewrite_review(tool_call.name)
 
     def requires_bypass_prewrite_review(self, tool_call: ToolCall) -> bool:
+        """判断是否为"BYPASS 模式下仍需自动预写审查"的调用: 这类调用不进并行批次, 走单独的旁路 diff 流程。"""
+
         manager = self.session.permission_manager
         return (
             self.session.require_prewrite_review
             and manager is not None
             and manager.mode == PermissionMode.BYPASS
             and self.session.tool_registry.get(tool_call.name) is not None
-            and supports_prewrite_review(tool_call.name)
+            and supports_prewrite_review(tool_call.name)    # 工具本身支持预写审查
         )
 
     def _prepare_bypass_mutation(
@@ -587,8 +609,11 @@ class ToolExecutor:
         return None
 
     def execute_single(self, tool_call: ToolCall) -> ToolResult:
+        """串行执行单个工具调用: 执行期间把取消令牌挂到线程局部变量供工具查询, 前后发送 started/finished 事件。"""
+
         self._check_cancelled()
         self._emit_event("started", tool_call)
+        # 使工作现场的局部变量指向全局Token, 共享这个Token
         with cancellation_context(self.cancellation_token):
             result = self.session.execute_tool_call(tool_call)
         self._emit_event("finished", tool_call, result=result)
@@ -596,12 +621,11 @@ class ToolExecutor:
         return result
 
     def execute_parallel_readonly_batch(self, tool_calls: list[ToolCall]) -> list[ToolResult]:
-        """Execute a batch of read-only tools in parallel.
+        """在线程池中并行执行一批只读工具, 结果按入参顺序返回。
 
-        Permission has already been confirmed ALLOW by ``can_execute_in_parallel``
-        before reaching this method.  Use ``execute_tool_call_after_permission_
-        confirmation`` to skip the redundant permission re-check inside the
-        PermissionAwareToolRegistry and go straight to the underlying executor.
+        进入本方法前, 批内每个调用的权限已由 can_execute_in_parallel 预检为
+        ALLOW, 因此这里直接调用 execute_tool_call_after_permission_confirmation,
+        跳过 PermissionAwareToolRegistry 内重复的权限检查, 直达底层执行器。
         """
 
         self._check_cancelled()
@@ -615,11 +639,11 @@ class ToolExecutor:
         return results
 
     def _execute_parallel_tool(self, tool_call: ToolCall) -> ToolResult:
-        """Execute one tool call in a parallel batch without re-checking permission.
+        """执行并行批中的单个工具调用, 不再重复做权限检查。
 
-        The caller already verified ALLOW before entering the batch.  This avoids
-        the second ``registry.preflight`` + ``permission_manager.preflight`` round
-        trip that ``execute_tool_call`` would otherwise perform.
+        调用方在进批前已经预检过 ALLOW, 这里若走 execute_tool_call 会再跑一遍
+        registry.preflight + permission_manager.preflight 的重复往返, 所以直接
+        调用 execute_tool_call_after_permission_confirmation。
         """
 
         self._check_cancelled()

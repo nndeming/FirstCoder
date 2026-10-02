@@ -264,13 +264,17 @@ class AgentChatRunner:
         return self._finish_agent_result(before_count, loop, result)
 
     def _finish_agent_result(self, before_count: int, loop: AgentLoop, result) -> ChatResponse:
+        # 将pending_input写入到AgentChatRunner的属性上
         self.last_pending_input = result.pending_input
+        # 仅当本轮因权限确认被暂停时, 把这个暂停中的loop实例留档, 供恢复对话时复用其全部中途状态, 否则清空
         self._remember_pending_permission_loop(loop)
+        # 刷新TUI
         self._refresh_turn_output(before_count, loop)
         if result.response is not None:
             if result.response.content and not self.last_display_lines:
                 self.last_display_lines.append(result.response.content)
             return result.response
+        # 准备TUI显示, 等待用户输入
         return self._waiting_for_input_response(result.pending_input)
 
     def _current_tools(self) -> list[Tool] | None:

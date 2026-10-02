@@ -48,6 +48,7 @@ class cancellation_context:
         self.token = token
         self.previous: CancellationToken | None = None
 
+    # with 要求实现__enter__ 和 __exit__ 两个方法
     def __enter__(self) -> None:
         self.previous = current_cancellation_token()
         _LOCAL.token = self.token

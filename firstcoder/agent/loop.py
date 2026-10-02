@@ -773,12 +773,12 @@ class AgentLoop:
             raise
 
     def _run_tool_loop_interactive(self, complete_once, *, initial_tool_choice="auto") -> AgentTurnResult:
-        """核心工具循环：问模型，执行工具，再把工具结果回喂给模型。
+        """核心工具循环: 问模型, 执行工具, 再把工具结果回喂给模型。
 
-        退出条件只有三类：
+        退出条件只有三类:
         - 模型返回的 response 没有 tool_calls: 说明它已经给出最终回答。
         - 命中 max_tool_rounds: 防止模型无限调用工具。
-        - 某个工具需要用户输入或权限确认：暂停并把 pending_input 交给 UI。
+        - 某个工具需要用户输入或权限确认: 暂停并把 pending_input 交给 UI。
         """
 
         guardrail_stop = False
@@ -935,10 +935,14 @@ class AgentLoop:
             # 关键顺序：必须先写 assistant tool_call，再写对应 tool_result。provider 后续
             # 才能看到合法的 “assistant(tool_calls) -> tool(result)” 消息序列。
             self.session.append_assistant_response(response)
+            # 执行工具调用
             execution = self.tool_executor.execute_interactive(response.tool_calls)
             if execution.pending_input is not None:
+                # 工具执行期间需要挂起(权限确认 ASK 或工具反问用户): 立即返回 pending_input,
+                # 本轮暂停; 用户回复后走 resume 从断点恢复, 已执行的工具不会重跑。
                 return response, execution.pending_input, tool_rounds
             if execution.task_hash_changed:
+                # task_boundary 判定发生任务切换: 趁新旧任务的分界点先做上下文压缩
                 self._compact_after_task_hash_changed()
 
             tool_rounds += 1
