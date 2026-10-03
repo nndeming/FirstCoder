@@ -177,6 +177,7 @@ class AgentLoop:
             if name.startswith("mcp__")
         }
         self._active_mcp_tool_names: set[str] = set()
+        # 初始化自动构造一个ToolExecutor
         self.tool_executor = ToolExecutor(
             session=session,
             settlement=self.tool_settlement,
@@ -894,6 +895,8 @@ class AgentLoop:
         return AgentTurnResult(status=AgentTurnStatus.WAITING_FOR_USER_INPUT, pending_input=pending_input)
 
     def _complete_turn(self, response: ChatResponse) -> AgentTurnResult:
+        """联合`ChatResponse`, 补充`status`构成`AgentTurnResult`
+        """
         self.session.append_assistant_response(response)
         status = "completed"
         if response.finish_reason == "interrupted":

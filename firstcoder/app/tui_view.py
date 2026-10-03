@@ -276,6 +276,7 @@ class FirstCoderViewMixin:
                 status=tool_event_status(event),
             )
 
+        # 将 `handler_event` 绑定到chat_runner上
         setattr(self.chat_runner, "tool_event_handler", handle_event)
         return previous_handler
 

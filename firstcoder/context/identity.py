@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 def _new_id(prefix: str) -> str:
-    """生成带业务前缀的 ID，方便日志和 JSONL 文件人工排查。"""
+    """生成带业务前缀的 ID, 方便日志和 JSONL 文件人工排查。"""
 
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 

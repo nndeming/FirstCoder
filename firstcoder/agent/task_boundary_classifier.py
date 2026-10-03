@@ -139,10 +139,14 @@ class TaskBoundaryClassifier:
             "task_boundary",
             {"decision": decision, "basis_message_id": basis_message_id},
         )
+        # 将 ToolResult 转为 TaskBoundaryObservation
         observation = observation_from_tool_result_data(result.data) if result.ok else None
         if observation is None:
             return
+        # 落盘
         self.session.writer.append_task_boundary_observation(observation)
+        # 给消息打任务标签
         self._tag_task_boundary_messages(result.data)
+        # 必要时触发压缩
         if result.data.get("should_trigger_compaction"):
             self._compact_if_needed(trigger=ContextWindowTrigger.TASK_HASH_CHANGED)

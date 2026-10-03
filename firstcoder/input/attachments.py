@@ -325,7 +325,9 @@ def prepare_attachments_for_session(
     session_id: str,
 ) -> list[PreparedAttachment]:
     """Copy attachments under the session attachment directory.\n\n
-    把用户传入的文件/图片从临时位置复制进会话自己的存储目录
+    把用户传入的文件/图片从临时位置复制进会话自己的存储目录\n\n
+
+    感觉需要加一个附件清理机制(需要先调研一下)
     """
 
     if not attachments:
