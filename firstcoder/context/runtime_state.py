@@ -42,7 +42,7 @@ def active_auto_compact_disabled_until(state: "SessionRuntimeState") -> str | No
 def auto_compact_circuit_is_open(state: "SessionRuntimeState") -> bool:
     """判断自动压缩熔断是否仍打开。
 
-    这里会顺手清理已经过期的 disabled_until，让后续 compact/status 看到一致状态。
+    这里会顺手清理已经过期的 disabled_until, 让后续 compact/status 看到一致状态。
     """
 
     if active_auto_compact_disabled_until(state):

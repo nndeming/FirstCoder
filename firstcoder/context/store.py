@@ -55,10 +55,13 @@ class JsonlSessionStore:
         with path.open("r", encoding="utf-8") as file:
             for line in file:
                 if line.strip():
+                    # 读取的每一行都是一个SessionEvent
                     events.append(SessionEvent.from_dict(json.loads(line)))
         return events
 
     def rebuild_session_view(self, session_id: str) -> SessionView:
+        """重放会话事件日志, 还原出当前内存视图(空会话返回空视图)。"""
+
         view = SessionView(session_id=session_id)
         for sequence, event in enumerate(self.list_events(session_id), start=1):
             self._apply_event(view, event, sequence=sequence)
@@ -68,27 +71,33 @@ class JsonlSessionStore:
         return self.sessions_dir / f"{session_id}.jsonl"
 
     def _apply_event(self, view: SessionView, event: SessionEvent, *, sequence: int) -> None:
+        # 追加到view.metadata
         if event.type in {"session_created", "session_metadata_updated"}:
             view.metadata = merge_metadata_patch(view.metadata, event.payload)
             view.metadata["session_id"] = event.session_id
             return
 
+        # 追加到view.checkpoints
         if event.type == "checkpoint_created":
             view.checkpoints.append(Checkpoint.from_dict(_checkpoint_payload(event, sequence=sequence)))
             return
 
+        # 替换view.messages
         if event.type == "compaction_completed":
             _apply_compaction_replacements(view, event)
             return
 
+        # 更新已有part
         if event.type == "message_part_metadata_updated":
             _apply_message_part_metadata_update(view, event)
             return
 
+        # 追加到 view.task_plan
         if event.type == "task_plan_updated":
             _apply_task_plan_payload(view, event)
             return
 
+        # 4种消息类, 追加到 view.messages
         role = EVENT_ROLE_MAP.get(event.type)
         if role is None:
             return

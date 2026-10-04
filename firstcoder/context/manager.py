@@ -107,14 +107,24 @@ class ContextWindowManager:
             )
 
     def compact_if_needed(self, request: ContextCompactRequest) -> ContextCompactResult:
+        """压缩编排入口: 先过触发闸门(阈值/熔断/无效跳过), 再走 L1-L3 程序化压缩,
+        压不到目标就升级 L4 模型摘要; 全程落盘压缩事件, 失败按 fallback 策略收场。"""
+
         assert self.config is not None
         assert self.pipeline is not None
+
+        # 获取压缩触发类型(trigger) 模式(mode)
         trigger = ContextWindowTrigger(request.trigger)
         mode = ContextCompactMode(request.mode)
+
+        # 压缩前token数
         before_tokens = request.budget.input_tokens
+        # 当前视图的指纹
         input_fingerprint = session_view_fingerprint(request.view)
+        # 当前连续失败次数
         auto_failure_count_before = request.runtime_state.auto_compact_failure_count
 
+        # 目前实现比较简陋, 就比较watermark
         decision = evaluate_context_triggers(
             request.view,
             self.config,
@@ -122,14 +132,20 @@ class ContextWindowManager:
             high_watermark=request.budget.high_watermark,
             low_watermark=request.budget.low_watermark,
         )
+
+        # AUTO模式, 且input_tokens未达到high_watermark
         if trigger == ContextWindowTrigger.AUTO and not decision.should_compact:
             return self._unchanged("skipped", "under_threshold", request, before_tokens)
+
+        # AUTO模式, 且自动熔断开启
         if (
             trigger == ContextWindowTrigger.AUTO
             and mode == ContextCompactMode.AUTO
             and auto_compact_circuit_is_open(request.runtime_state)
         ):
             return self._unchanged("skipped", "circuit_open", request, before_tokens)
+
+        # AUTO模式, 且当前指纹上次压缩过但无效
         if (
             trigger == ContextWindowTrigger.AUTO
             and request.runtime_state.last_no_effect_compaction_fingerprint == input_fingerprint
@@ -138,6 +154,8 @@ class ContextWindowManager:
 
         target_tokens = _target_tokens(request, trigger)
         if request.budget.fixed_tokens >= request.budget.low_watermark:
+            # 如果fixed_tokens >= low_watermark, 就判定失败
+            # 因为压缩只压history_tokens
             return ContextCompactResult(
                 status="failed",
                 reason="fixed_context_over_budget",
@@ -147,9 +165,11 @@ class ContextWindowManager:
                 final_failure_reason="fixed_context_over_budget",
             )
 
+        # TASK_HASH_CHANGED情况下必须走完l2, l3
         required_levels: tuple[Literal["l1", "l2", "l3"], ...] = (
             ("l2", "l3") if trigger == ContextWindowTrigger.TASK_HASH_CHANGED else ()
         )
+        # 跑程序化流水线压缩
         programmatic = self.pipeline.compact(
             CompactionRequest(
                 view=request.view,
@@ -166,9 +186,12 @@ class ContextWindowManager:
                 force_old_task_compaction=trigger == ContextWindowTrigger.TASK_HASH_CHANGED,
             )
         )
+
+        # 估计"压缩后"的视图token
         after_tokens = request.estimate_budget(programmatic.view).input_tokens
 
         if trigger == ContextWindowTrigger.AUTO and programmatic.event.noop and after_tokens < target_tokens:
+            # AUTO自动触发 + nnop + after_tokens达到目标
             request.runtime_state.last_no_effect_compaction_fingerprint = input_fingerprint
             SessionEventWriter(store=self.store, session_id=request.view.session_id).append_compaction_skipped(
                 trigger=trigger.value,
@@ -190,6 +213,8 @@ class ContextWindowManager:
             target_tokens=target_tokens,
             event=programmatic.event,
         )
+
+        # after_tokens达到目标 并且 压缩触发原因不是provider判定为超长
         if after_tokens < target_tokens and trigger != ContextWindowTrigger.PROMPT_TOO_LONG:
             self._record_auto_success_if_needed(request=request, mode=mode)
             return ContextCompactResult(
@@ -202,6 +227,7 @@ class ContextWindowManager:
             )
 
         if self.l4_service is None:
+            # 这里是走到了L4, L4需要使用大模型进行压缩, 此处判断相关的大模型服务不存在, 需要报错
             return self._final_l4_failure(
                 request=request,
                 trigger=trigger,
@@ -219,6 +245,7 @@ class ContextWindowManager:
                 reason="l4_service_missing",
             )
 
+        # L4级别模型摘要压缩
         outcome = self._generate_validate_commit(
             request=request,
             l4_request=LlmCompactRequest(
@@ -585,10 +612,13 @@ class ContextWindowManager:
 
 
 def _target_tokens(request: ContextCompactRequest, trigger: ContextWindowTrigger) -> int:
+    # 调用方显式指定
     if request.target_tokens is not None:
         return request.target_tokens
+    # 任务切换之后, 压缩到low_watermark的2/3
     if trigger == ContextWindowTrigger.TASK_HASH_CHANGED:
         return max(1, request.budget.low_watermark * 2 // 3)
+    # 其他情况, 压缩到low_watermark
     return request.budget.low_watermark
 
 

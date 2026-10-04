@@ -63,12 +63,22 @@ class RouteCompactRouter:
     preview_chars: int = 160
 
     def compact_part(self, part: MessagePart) -> MessagePart | None:
+        """路由压缩入口: 对单个 tool_result part 尝试按内容类型压缩, 不适合就返回 None。
+
+        三种"不适合"的情况: 原文太小(min_original_tokens 以下)、没有可用的
+        压缩器、压缩结果没有真的变小。成功时返回新 part -- id/message_id/kind
+        保持不变, 只替换 content 并补充溯源 metadata。
+        """
+
+        # 原文太小就不值得压
         original_tokens = estimate_text_tokens(part.content)
         if original_tokens < self.min_original_tokens:
             return None
 
+        # 探测内容类型(grep 输出/搜索列表/diff/纯文本...), tool_name 作为辅助提示
         detection = detect_route_content_type(part.content, tool_name=_tool_name(part))
         route_content_type = detection.content_type
+        # 按探测到的类型找专用压缩器, 没有就回退到纯文本压缩器
         compressor = self.compressors.get(route_content_type)
         fallback_from: RouteContentType | None = None
         if compressor is None and route_content_type is not RouteContentType.PLAIN_TEXT:
@@ -82,10 +92,12 @@ class RouteCompactRouter:
         if route_result is None:
             return None
 
+        # 压缩后必须真的变小, 没变小就等于白压
         replacement_tokens = estimate_text_tokens(route_result.content)
         if replacement_tokens >= original_tokens:
             return None
 
+        # 补溯源信息: 指纹校验内容, 压缩器自己还可以再追加额外字段
         metadata = dict(part.metadata)
         metadata.update(
             {
@@ -129,20 +141,41 @@ _CODE_PATTERN = re.compile(
 
 
 def detect_route_content_type(content: str, *, tool_name: str | None = None) -> RouteDetection:
+    """探测 tool_result 的内容类型, 供路由阶段选择对应的压缩器。
+
+    本函数只做分类, 不做压缩: 输出的 content_type(8 选 1) 交给 compact_part
+    去 compressors 字典查对应的专用压缩器, 压缩器里写死了该类型的保留/删除规则。
+
+    判定流程为级联, 命中即停:
+    1. 工具名提示(grep/rg -> 搜索结果, git_diff/diff -> diff);
+    2. JSON 实际解析(成功即 JSON 数组/对象);
+    3. 正则特征级联(diff 头 -> HTML -> 文件:行号 -> 代码 -> 构建输出,
+       按特征具体程度排序, 越具体越靠前);
+    4. 全部未命中 -> 纯文本。
+
+    confidence 是每条判定规则手工标定的证据强度(1.0 JSON 解析 / 0.95 工具名 /
+    0.85~0.6 正则 / 0.5 默认), 不随文本变化, 不是概率; 目前仅随压缩 metadata
+    落盘留痕, 不参与路由决策。
+    """
+
     stripped = content.strip()
     if not stripped:
+        # 空内容没有压缩价值, 类型无所谓, 置信度给 0
         return RouteDetection(RouteContentType.PLAIN_TEXT, 0.0)
 
+    # 工具名是最强信号: grep/rg 的输出基本可判定为搜索结果, 无需再检查内容
     tool_hint = (tool_name or "").lower()
     if tool_hint in {"grep", "rg"}:
         return RouteDetection(RouteContentType.SEARCH_RESULTS, 0.95, {"source": "tool_hint"})
     if tool_hint in {"git_diff", "diff"}:
         return RouteDetection(RouteContentType.GIT_DIFF, 0.95, {"source": "tool_hint"})
 
+    # JSON 通过实际解析判定, 解析成功即完全确定
     json_detection = _detect_json(stripped)
     if json_detection is not None:
         return json_detection
 
+    # 正则级联: 特征越具体越靠前(置信度也越高); 代码特征最泛, 放最后且置信度最低
     if _DIFF_HEADER_PATTERN.search(stripped):
         return RouteDetection(RouteContentType.GIT_DIFF, 0.85)
     if _HTML_PATTERN.search(stripped[:3000]):
@@ -151,6 +184,7 @@ def detect_route_content_type(content: str, *, tool_name: str | None = None) -> 
         return RouteDetection(RouteContentType.SEARCH_RESULTS, 0.8)
     if _CODE_PATTERN.search(stripped):
         return RouteDetection(RouteContentType.SOURCE_CODE, 0.6)
+    # 构建输出要凑"工具名 + 内容特征"两个信号, 比只中内容特征的更可信
     if tool_hint in {"shell", "pytest"} and _BUILD_OUTPUT_PATTERN.search(stripped):
         return RouteDetection(RouteContentType.BUILD_OUTPUT, 0.75, {"source": "tool_hint"})
     if _BUILD_OUTPUT_PATTERN.search(stripped):

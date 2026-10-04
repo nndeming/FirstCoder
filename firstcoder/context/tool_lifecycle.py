@@ -54,11 +54,9 @@ def index_tool_result_lifecycles(
     *,
     current_turn: int | None = None,
 ) -> dict[tuple[str, str], ToolResultLifecycleRecord]:
-    """Classify tool results in an already-projected effective tail.
+    """为尾部消息里的每个`tool_result`标注生命周期状态, 以 (message_id, part_id) 为键返回索引。
 
-    ``current_turn`` is intentionally accepted for the pipeline contract, but
-    lifecycle is based only on the deterministic tool timeline in this phase.
-    Ambiguous calls, malformed data, and failed results fail open as ``fresh``.
+    分类只看确定性的工具时间线(配对、消费、派生关系), 拿不准的一律按 fresh 处理。
     """
 
     del current_turn

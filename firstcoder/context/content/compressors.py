@@ -20,12 +20,11 @@ from firstcoder.context.versions import COMPACTION_STRATEGY_VERSION
 
 
 def compact_old_task_part(part: MessagePart) -> MessagePart:
-    """Return the L1 representation for an old-task dialogue part.
+    """生成 L1 修剪后的 part: 内容清空, 原样保留 id 与元数据。
 
-    L1 is deliberate forgetting, rather than a tiny natural-language summary.
-    The original event remains in JSONL, but the effective view has no visible
-    text for this part.  ``ContextBuilder`` emits one aggregate marker for a
-    tail containing any such part.
+    L1 是"刻意遗忘"而非摘要——原文仍留在 JSONL 里可查, 但有效视图中该 part
+    不再有任何可见文本; ContextBuilder 对含此类 part 的尾部只输出一条
+    汇总标记, 不再逐条投影原文。
     """
 
     metadata = _compacted_metadata(

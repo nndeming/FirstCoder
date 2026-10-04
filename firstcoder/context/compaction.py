@@ -91,26 +91,36 @@ class CompactionPipeline:
     _seen_noop_fingerprints: set[str] = field(default_factory=set)
 
     def compact(self, request: CompactionRequest) -> CompactionResult:
+        # 深拷贝当前视图, 防止失败
         view = _clone_view(request.view)
+        # 压缩前视图指纹
         input_fingerprint = session_view_fingerprint(request.view)
+        # 压缩前tokens
         before_tokens = request.estimate_tokens(view)
         lifecycle_records = index_tool_result_lifecycles(
             _effective_tail_messages(view),
             current_turn=request.current_turn,
         )
         lifecycle_counts = _lifecycle_counts(lifecycle_records)
+
+        # 计算实际生效的压缩层级
         required_levels = set(request.required_levels).intersection(request.enabled_levels)
+
+        # 单个tool_result的压缩目标阈值
         per_result_target = _per_result_target(
             request.l2_result_target_tokens,
             fallback=self.large_tool_result_tokens,
         )
 
+        # 必须清理的部分
         has_l3_mandatory_candidates = _has_l3_mandatory_candidates(
             _effective_tail_messages(view),
             lifecycle_records=lifecycle_records,
             current_turn=request.current_turn,
             consumed_tool_result_part_ids=request.consumed_tool_result_part_ids,
         )
+
+        # 单tool_result过大, 值得清理
         has_l3_per_result_pressure = _has_l3_per_result_pressure(
             _effective_tail_messages(view),
             lifecycle_records=lifecycle_records,
@@ -119,6 +129,7 @@ class CompactionPipeline:
             consumed_tool_result_part_ids=request.consumed_tool_result_part_ids,
         )
 
+        # 先校验一下是否有必要压缩
         if (
             before_tokens <= request.target_tokens
             and not request.force_old_task_compaction
@@ -126,6 +137,7 @@ class CompactionPipeline:
             and not ("l3" in request.enabled_levels and has_l3_mandatory_candidates)
             and not ({"l2", "l3"}.intersection(request.enabled_levels) and has_l3_per_result_pressure)
         ):
+            # dedup 是 de-duplicate(去重)的缩写，deduped 即"已被识别为重复的"
             deduped = input_fingerprint in self._seen_noop_fingerprints
             self._seen_noop_fingerprints.add(input_fingerprint)
             return CompactionResult(
@@ -231,6 +243,7 @@ class CompactionPipeline:
         lifecycle_records: dict[tuple[str, str], ToolResultLifecycleRecord],
     ) -> list[dict[str, object]]:
         if level == "l1":
+            # 旧任务普通对话文本
             return self._apply_l1(
                 view,
                 active_task_hash=request.active_task_hash,
@@ -238,12 +251,14 @@ class CompactionPipeline:
                 force_old_task_compaction=request.force_old_task_compaction,
             )
         if level == "l2":
+            # 超大tool_result
             return self._apply_l2(
                 view,
                 request=request,
                 lifecycle_records=lifecycle_records,
             )
         if level == "l3":
+            # 已消费 + 变冷的tool_result
             return self._apply_l3(
                 view,
                 request=request,
@@ -261,32 +276,39 @@ class CompactionPipeline:
         current_turn: int,
         force_old_task_compaction: bool,
     ) -> list[dict[str, object]]:
-        """Trim only old-task ordinary dialogue that is safe to forget.
+        """L1: 修剪旧任务里安全可忘的对话文本(只动 user/assistant 的话, 不碰工具结果)。
 
-        L1 eligibility is partly a property of the enclosing message.  In
-        particular, text in an assistant tool-call message must not be trimmed
-        independently: it is part of the provider-visible tool transaction.
+        三道保护: 最新一条 user 消息不动; 含 tool_call 的 assistant 消息不动
+        (它是 provider 可见的工具信息, 不能单独修剪); 默认只动距当前够冷的
+        (≥cold_turn_distance 轮), 换任务(force)时全动. 修剪掉的文本不可恢复.
         """
 
         changed: list[dict[str, object]] = []
+        # 只处理有效尾部(latest checkpoint 之后的真实 tail)
         tail_messages = _effective_tail_messages(view)
+        # 找到用户最新消息对应的message_id
         latest_user_id = latest_user_message_id(tail_messages)
         for message in tail_messages:
             if message.role not in {"user", "assistant"}:
                 continue
             if message.id == latest_user_id:
+                # 不压缩最新的user内容
                 continue
             if message.role == "assistant" and any(part.kind == "tool_call" for part in message.parts):
                 continue
             for index, part in enumerate(message.parts):
                 if not is_old_task_part(part, active_task_hash=active_task_hash):
+                    # !(未被压缩 && kind == "text" && part带的hash和当前active_task_hash不一致)
                     continue
                 if not force_old_task_compaction and not _is_cold_old_task_part(
+                    # 不是强制压缩, part也没有过冷(不满足当前轮 - 创建轮 >= cold_turn_distance)
                     part,
                     current_turn=current_turn,
                     cold_turn_distance=self.cold_turn_distance,
                 ):
                     continue
+                
+                # L1压缩
                 compacted = compact_old_task_part(part)
                 if _replace_l1_trimmed(message.parts, index, compacted):
                     changed.append(_replacement_event(message_id=message.id, source=part, replacement=compacted))
@@ -299,12 +321,21 @@ class CompactionPipeline:
         request: CompactionRequest,
         lifecycle_records: dict[tuple[str, str], ToolResultLifecycleRecord],
     ) -> list[dict[str, object]]:
+        """L2 压缩：对「模型已消费 + 生命周期为 DERIVED」的 tool_result 按类型路由成摘要。
+
+        路由前先归档原始字节(这是备份，不是 L3 的占位驱逐), 归档失败就跳过该
+        part——宁可不压也不丢原文. 替换后 metadata 记下 archive_id、原始/替换
+        token 数等信息, 之后可以凭 archive_id 把原文取回来。
+        """
+
         changed: list[dict[str, object]] = []
         archive = ToolResultArchive(self.root)
         router = _make_route_router(preview_chars=self.cold_preview_chars)
         for message in _effective_tail_messages(view):
             for index, part in enumerate(message.parts):
                 lifecycle = lifecycle_records.get((message.id, part.id))
+                # 四个要求: 模型已消费, 有生命周期记录且未压过, 非取回保护期, 生命周期为 DERIVED
+                # 四个要求都达到了, 才进行后续的L2压缩
                 if not _should_route_compact_l2_part(
                     part,
                     lifecycle=lifecycle,
@@ -313,17 +344,18 @@ class CompactionPipeline:
                 ):
                     continue
 
+                # 按 tool 类型路由到对应的摘要器(grep/wc/...), 认不出的类型返回 None, 跳过
                 compacted = router.compact_part(part)
                 if compacted is None:
                     continue
                 try:
-                    # This is backing, not L3 eviction: archive the exact raw
-                    # bytes before the route result becomes visible in the view.
+                    # 这是备份而非 L3 驱逐: 路由结果对视图可见之前, 先把精确的原始字节归档.
                     record = archive.store_original(view.session_id, part)
                 except (ArchiveIntegrityError, OSError, ValueError):
                     continue
 
                 assert lifecycle is not None
+                # 给替换结果记好溯源信息: archive_id 用于日后取回原文, token 对比用于记账
                 compacted.metadata.update(
                     {
                         "archive_id": record.archive_id,
@@ -336,6 +368,7 @@ class CompactionPipeline:
                         "compacted_by": _l2_compacted_by(compacted.metadata.get("compacted_by")),
                     }
                 )
+                # 只有替换后真的更小才生效 -- 摘要比原文还长就没有压缩意义了
                 if _replace_if_smaller(message.parts, index, compacted):
                     changed.append(_replacement_event(message_id=message.id, source=part, replacement=compacted))
         return changed
@@ -349,9 +382,18 @@ class CompactionPipeline:
         current_turn: int,
         lifecycle_records: dict[tuple[str, str], ToolResultLifecycleRecord],
     ) -> list[dict[str, object]]:
+        """L3 压缩: 把垃圾级或超大 DERIVED 的 tool_result 换成占位符, 原文进归档。
+
+        候选分两类: 强制(DUPLICATE/SUPERSEDED/STALE, 不管整体是否达标都必须清掉)
+        和可选(DERIVED, 仅当单个超 per_result_target 或整体仍超 target 时才处理),
+        已按 生命周期优先级 > token 数 > 创建轮次 排好序。归档成功才替换,
+        占位符只留生命周期说明和 archive_id, 模型需要原文时可凭它取回。
+        """
+
         changed: list[dict[str, object]] = []
         archive = ToolResultArchive(self.root)
         del active_task_hash
+        # 筛候选: 强制(垃圾级) + 可选(DERIVED 超单条阈值), 返回时已按优先级排好序
         candidates = _l3_candidates(
             _effective_tail_messages(view),
             lifecycle_records=lifecycle_records,
@@ -364,12 +406,12 @@ class CompactionPipeline:
             consumed_tool_result_part_ids=request.consumed_tool_result_part_ids,
         )
         for candidate in candidates:
+            # 非强制且未超单条阈值的候选: 整体已达标就提前收工, 后面的不再处理
             if not candidate.mandatory and not candidate.over_per_result_target and request.estimate_tokens(view) <= request.target_tokens:
                 break
 
             part = candidate.message.parts[candidate.part_index]
-            # A preceding candidate may have transformed this part in future
-            # refactors.  Re-check before touching durable backing.
+            # 前面的候选处理过程中这个 part 可能已被改动过, 操作持久化数据前先复查一次
             if not _can_archive_l3_part(
                 part,
                 lifecycle=candidate.lifecycle,
@@ -378,6 +420,7 @@ class CompactionPipeline:
             ):
                 continue
             try:
+                # 占位符驱逐前先确保原文已落归档; 若是 L2 压过的, 复用 L2 的 archive_id
                 record = _l3_backing_record(archive, view.session_id, part)
                 compacted = archive.make_placeholder(
                     part,
@@ -387,9 +430,9 @@ class CompactionPipeline:
                     key_errors=_lifecycle_key_errors(part),
                 )
             except (ArchiveIntegrityError, OSError, ValueError):
-                # Archive backing is an all-or-nothing safety boundary: if
-                # persistence or validation fails, retain the current part.
+                # 归档是 all-or-nothing 的保险: 落盘或校验失败就保留现状, 不做半个替换
                 continue
+            # 占位符上记生命周期信息, 模型读到时知道这段结果为什么只剩个壳
             compacted.metadata.update(
                 {
                     "lifecycle": candidate.lifecycle.lifecycle.value,
@@ -397,6 +440,7 @@ class CompactionPipeline:
                     "replacement_tokens": estimate_text_tokens(compacted.content),
                 }
             )
+            # 同 L2: 只有替换后真的变小才生效
             if _replace_if_smaller(candidate.message.parts, candidate.part_index, compacted):
                 changed.append(
                     _replacement_event(
@@ -420,7 +464,7 @@ def _clone_view(view: SessionView) -> SessionView:
 def _effective_tail_messages(view: SessionView) -> list[AgentMessage]:
     """只让程序化压缩处理 latest checkpoint 之后的真实 tail。
 
-    checkpoint 覆盖过的旧历史已经由 summary 表达；L1-L3 如果继续扫描旧 raw message，
+    checkpoint 覆盖过的旧历史已经由 summary 表达; L1-L3 如果继续扫描旧 raw message,
     会和 ContextBuilder/L4 的 effective context 边界不一致。
     """
 
@@ -443,7 +487,7 @@ def _replacement_event(*, message_id: str, source: MessagePart, replacement: Mes
 
 
 def _replace_l1_trimmed(parts: list[MessagePart], index: int, trimmed: MessagePart) -> bool:
-    """Apply L1 even when the resulting empty content has zero tokens."""
+    """执行 L1 替换并报告是否真的改了(内容已为空、元数据一致则视为无改动)。"""
 
     if parts[index].content == trimmed.content and parts[index].metadata == trimmed.metadata:
         return False
@@ -465,6 +509,8 @@ def _is_cold_old_task_part(
     current_turn: int,
     cold_turn_distance: int,
 ) -> bool:
+    """判断 part 是否"冷透": 诞生至今(当前轮 - 创建轮)已超过 cold_turn_distance 轮无人触及"""
+
     created_turn = part.metadata.get("created_turn")
     return isinstance(created_turn, int) and not isinstance(created_turn, bool) and current_turn - created_turn >= cold_turn_distance
 
@@ -487,6 +533,7 @@ def _archive_ids_from_replacements(replacements: list[dict[str, object]]) -> lis
 def _lifecycle_counts(
     lifecycle_records: dict[tuple[str, str], ToolResultLifecycleRecord],
 ) -> dict[str, int]:
+    """统计各生命周期状态的出现次数; 未出现的状态也保留零值键, 返回形状稳定的计数字典。"""
     counts = {lifecycle.value: 0 for lifecycle in ToolResultLifecycle}
     for record in lifecycle_records.values():
         counts[record.lifecycle.value] += 1
@@ -584,9 +631,16 @@ def _has_l3_mandatory_candidates(
     current_turn: int,
     consumed_tool_result_part_ids: frozenset[str],
 ) -> bool:
+    """探针: 视图里是否存在"生命周期属垃圾级(重复/被覆盖/过期)且当前可归档"的 part。
+
+    存在则压缩不得跳过或提前收工, L3 必须跑完把它们清掉; 本函数只判存在性, 不做修改。
+    """
+
     for message in messages:
         for part in message.parts:
             lifecycle = lifecycle_records.get((message.id, part.id))
+            # _is_l3_mandatory: 生命周期属于"垃圾级"(DUPLICATE || SUPERSEDED || STALE)
+            # _can_archive_l3_part: 当前可以处理它(存疑)
             if _is_l3_mandatory(lifecycle) and _can_archive_l3_part(
                 part,
                 lifecycle=lifecycle,
@@ -605,7 +659,11 @@ def _has_l3_per_result_pressure(
     per_result_target: int | None,
     consumed_tool_result_part_ids: frozenset[str],
 ) -> bool:
-    """Whether an eligible derived result needs an L2/L3 pass below budget."""
+    """探针: 整体虽未超预算, 但是否存在"单个内容超阈值且当前可归档"的 DERIVED 结果。
+
+    存在则压缩不得提前收工, L2/L3 必须跑一轮处理它; 与强制候选探针的区别是
+    它由单个体积驱动(DERIVED 是可压而非必压), 阈值未配置时恒为 False。
+    """
 
     if per_result_target is None:
         return False
@@ -628,7 +686,8 @@ def _has_l3_per_result_pressure(
 
 
 def _per_result_target(value: object, *, fallback: int) -> int | None:
-    """Resolve a positive per-result budget without treating bool as int."""
+    """解析单个`tool_result`的压缩目标阈值: 主值合法用主值, 否则用兜底,
+    都不合法返回 None(该阈值停用); bool 显式排除, 防止配置里的 true 被当成 1。"""
 
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value

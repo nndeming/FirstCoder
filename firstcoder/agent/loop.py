@@ -1147,6 +1147,8 @@ class AgentLoop:
         tool_choice="auto",
         runtime_instruction: str | None = None,
     ) -> PreparedMainRequest:
+        """修补上下文, 必要时压缩, 最后拼出请求
+        """
         self._repair_interrupted_tool_calls_before_provider_request()
         self._check_cancelled()
         self._append_pending_guidance()
@@ -1159,6 +1161,7 @@ class AgentLoop:
             definitions=definitions,
         )
         if self.context_manager is not None:
+            # 必要时进行压缩
             result = self.context_manager.compact_if_needed(
                 ContextCompactRequest(
                     view=view,
@@ -1180,6 +1183,7 @@ class AgentLoop:
             view=view,
             runtime_instruction=runtime_instruction,
         )
+        # 组装
         request = self._main_chat_request(messages, definitions, tool_choice)
         return PreparedMainRequest(
             request=request,
@@ -1281,23 +1285,32 @@ class AgentLoop:
         )
 
     def _request_messages(self, *, view=None, runtime_instruction: str | None = None):
+        """拼出本次请求的完整消息: 静态系统前缀 + 动态叠加(临时指令/验收契约/计划快照),
+        再与消息历史合并成 provider 格式的 messages。"""
+
         resolved_view = view or self.session.rebuild_view()
         system_prefix = self.session.build_system_prefix(
             provider_name=self.provider.name,
             provider_model=self.provider.model,
             provider_capabilities=getattr(self.provider, "capabilities", None),
         )
+        # 以下是动态叠加内容
+        # 本次请求的临时指令
         if runtime_instruction:
             system_prefix = [
                 *system_prefix,
                 ChatMessage(role="system", content=runtime_instruction),
             ]
+        
+        # 验收契约
         acceptance_contract = self.execution_evidence.render_acceptance_contract()
         if acceptance_contract:
             system_prefix = [
                 *system_prefix,
                 ChatMessage(role="system", content=acceptance_contract),
             ]
+
+        # task_plan 快照
         if resolved_view.task_plan is not None:
             system_prefix = [
                 *system_prefix,
@@ -1312,13 +1325,27 @@ class AgentLoop:
         )
 
     def _provider_tool_definitions(self):
-        """根据 provider 能力决定是否向模型暴露工具 schema。"""
+        """从注册表全集中投影出"此刻告诉模型"的工具`schema`子集。
 
+        `registry`是"定义+执行"的事实来源, 本函数只决定`schema`层面给模型看哪些。
+        原则是`advertised`的每个工具这一时刻必然可调, 否则就是非法调用:
+        - `provider`不支持工具调用 → 整体不暴露;
+        - `task_boundary`是 loop 自用的内部记账工具, 模型看得到结果但调不了;
+        - 未连上的 MCP server 的工具暂不暴露(模型调了也没有执行器);
+        - think/web_search/ask_user/planning 按运行时开关过滤,
+          不能兑现的能力不宣传(如 benchmark 下无人回答 ask_user);
+        - 已有任务计划时放行`planning`工具, 供模型维护计划。
+        执行永远不经过这里, 走 session.execute_tool_call → registry。
+        """
+
+        # 获取模型能力
         capabilities = getattr(self.provider, "capabilities", None)
         if capabilities is not None and not capabilities.supports_tools:
             return []
         definitions = []
+        # 遍历registry中的工具, 将符合条件的工具收集并返回
         for definition in self.session.tool_registry.definitions():
+            # task_boundary不暴露给模型(只提供给分类模型)
             if definition.name in HIDDEN_TOOL_STATUS_NAMES:
                 continue
             if (
@@ -1348,10 +1375,12 @@ class AgentLoop:
         return definitions
 
     def _augment_tool_definition(self, definition):
-        """给后台可用工具的 schema 附加 run_in_background/background_label 控制字段。
+        """给确实支持后台的工具, 在发出去的 schema 副本上标注后台控制能力。
 
-        只有在启用了 background_manager 且工具在允许列表里时才增强，避免向模型暴露它
-        无法真正使用的控制字段。
+        谁能后台由 background_manager(运行时存在) 和 background_tool_names(白名单)
+        共同决定; 只有两者都满足才附加 run_in_background 等控制字段, 模型传了
+        这些参数才有人兑现。只改副本不改 registry 里的原件, executor 真正
+        调用前会把控制字段剥掉, 不传给底层工具函数。
         """
 
         if self.background_manager is None:
@@ -1542,6 +1571,9 @@ class AgentLoop:
         )
 
     def _append_pending_guidance(self) -> None:
+        """把用户在轮次运行期间插的话, 逐条转为`user_message`补进上下文(落盘),\n\n
+        让模型在下一次请求时能看到并即时调整行动
+        """
         if self.guidance_provider is None:
             return
         guidance_items = self.guidance_provider()
@@ -1551,12 +1583,9 @@ class AgentLoop:
                 self.session.append_user_message(text)
 
     def _append_background_notifications(self) -> None:
-        """Drain finished background jobs into the history before calling the provider.
-
-        Each completion becomes one independent ``background_notification`` user
-        message.  It never reuses the original ``tool_call_id``, so the provider
-        still sees exactly one tool result per assistant tool call.
-        """
+        """调模型前, 把这段时间里已完成的后台任务逐条转成 `background_notification`
+        消息补进历史; 通知不复用原始 tool_call_id(那个调用早已有"转后台"的
+        tool_result), 保证每个 tool_call 恰好配一条 result, 消息对 provider 合法。"""
 
         if self.background_manager is None:
             return

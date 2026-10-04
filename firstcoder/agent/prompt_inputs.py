@@ -108,7 +108,7 @@ def build_system_prompt_inputs(
     permission_policy: dict[str, Any] | None = None,
     mode: str = "default",
 ) -> SystemPromptInputs:
-    """组装 `SystemPromptInputs`，保证调用侧不用手写分散字段。"""
+    """组装 `SystemPromptInputs`, 保证调用侧不用手写分散字段。"""
 
     capabilities = provider_capabilities_from_instance(
         provider_capabilities,
