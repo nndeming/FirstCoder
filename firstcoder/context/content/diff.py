@@ -10,6 +10,12 @@ from firstcoder.context.models import MessagePart
 
 @dataclass(slots=True)
 class GitDiffRouteCompressor:
+    """unified diff 压缩: 保留文件头/hunk 头/全部增删行和文件级增删统计, 裁掉超量的上下文行.
+
+    上下文行只留前 max_context_lines 行和重要行 (def/class/todo 等); 文件数超 max_files
+    时只留汇总; 不是 diff 格式的输入返回 None.
+    """
+
     max_context_lines: int = 2
     max_files: int = 20
 

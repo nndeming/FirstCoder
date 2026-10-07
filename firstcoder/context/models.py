@@ -18,12 +18,12 @@ if TYPE_CHECKING:
 
 MessageRole = Literal["user", "assistant", "tool", "system_meta"]
 PartKind = Literal[
-    "text",
-    "tool_call",
-    "tool_result",
-    "checkpoint_summary",
-    "compaction_event_ref",
-    "archive_placeholder",
+    "text",                  # 普通对话文本 (user/assistant 的话, L1 修剪的对象)
+    "tool_call",             # assistant 发起的工具调用, 与 tool_result 必须成对出现
+    "tool_result",           # 工具执行结果, 生命周期判定与 L2/L3 压缩的主要对象
+    "checkpoint_summary",    # L4 摘要消息的内容 part, 由 checkpoint 投影而来
+    "compaction_event_ref",  # 对压缩事件的引用 part, 不占正文只留溯源指针
+    "archive_placeholder",   # L3 占位符: 原文已进归档, 只留生命周期说明和 archive_id
 ]
 
 
@@ -65,6 +65,7 @@ class MessagePart:
 
 @dataclass(slots=True)
 class AgentMessage:
+    """一条会话消息 (事实层最小记录单位), 由若干 MessagePart 组成, 落盘进 JSONL 后不再修改."""
     id: str
     session_id: str
     role: MessageRole | str
@@ -105,7 +106,7 @@ def latest_user_message_id(messages: list[AgentMessage]) -> str | None:
 
 @dataclass(slots=True)
 class SessionView:
-    """由事件日志重放得到的当前会话视图。"""
+    """由事件日志重放得到的当前会话视图: 是投影的输入, 不是 provider 请求格式."""
 
     session_id: str
     messages: list[AgentMessage] = field(default_factory=list)

@@ -25,6 +25,11 @@ _STACK_RE = re.compile(
 
 @dataclass(slots=True)
 class BuildOutputRouteCompressor:
+    """构建/shell 日志压缩: 保留错误块 (带上下文与紧随的堆栈), 警告, 汇总行和堆栈帧, 删掉正常输出流水.
+
+    行数超上限时按行优先级 (error > 堆栈 > 汇总 > 警告) 截断; 不像构建输出的输入返回 None.
+    """
+
     max_error_blocks: int = 8
     context_lines: int = 2
     max_warnings: int = 6

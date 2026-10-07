@@ -1,4 +1,9 @@
-"""L4 LLM compact 的 MVP 实现。"""
+"""L4 LLM compact 的实现: LLM 交接摘要, 有损兜底, L1-L3 压不到目标才启用.
+
+产出是 checkpoint 事件, 只追加进 append-only 的事实文件, 不改历史事件; resume 时由
+ContextBuilder 把它投影成一条摘要消息. 这里只负责"生成候选 -> 校验边界 -> 提交落盘",
+压缩时机由 ContextWindowManager 决定.
+"""
 
 from __future__ import annotations
 
@@ -46,7 +51,7 @@ class InvalidLlmCheckpointBoundaryError(ValueError):
 
 
 class UnconsumedLlmCheckpointBoundaryError(InvalidLlmCheckpointBoundaryError):
-    """L4 boundary would hide a tool result before its first successful projection."""
+    """L4 边界会把模型还没消费过的 tool result 藏进摘要里, 违反"没看过的不能压"红线."""
 
 
 class LlmSourceFingerprintMismatchError(ValueError):
@@ -99,20 +104,32 @@ class LlmCompactCandidate:
 
 @dataclass(slots=True)
 class LlmCompactService:
+    """L4 压缩服务: 调 summarizer 生成 checkpoint 候选, 校验边界后才允许提交落盘."""
+
     store: JsonlSessionStore
     summarizer: LlmCompactSummarizer
     retry_policy: CompactRetryPolicy = CompactRetryPolicy()
     auto_failure_limit: int = 3
 
     def generate_candidate(self, request: LlmCompactRequest) -> LlmCompactCandidate:
+        """让 LLM 生成压缩候选 checkpoint, 只生成不落盘, 失败按策略重试.
+
+        入口先过三道快速返回: 期望指纹校验, 重复源跳过, 熔断器跳过. 之后进入
+        重试循环, 只有可重试的错误 (prompt 过长, 超时, 无摘要) 才会重试,
+        边界类错误 (unconsumed_boundary, invalid_tool_sequence) 直接失败.
+        """
+
+        # 构造 L4 源: 只含会话消息 (不含 system prompt 和工具 schema), 并计算源指纹
         source = _build_l4_source(request.view)
         source_messages = source.messages
         source_fingerprint = _source_fingerprint(request.view.session_id, source)
+        # 调用方传了期望指纹且不匹配时抛异常, 防止基于过期视图生成摘要
         if request.expected_source_fingerprint and request.expected_source_fingerprint != source_fingerprint:
             raise LlmSourceFingerprintMismatchError(
                 "expected_source_fingerprint does not match current L4 source",
             )
 
+        # 源与上次压缩时完全相同, 再压一遍不会产生新内容, 直接跳过
         if request.runtime_state.last_compaction_input_fingerprint == source_fingerprint:
             return LlmCompactCandidate(
                 checkpoint=None,
@@ -123,6 +140,7 @@ class LlmCompactService:
                 ),
             )
 
+        # auto 模式下熔断器开着时直接跳过, 避免连续失败烧 token
         if request.mode == "auto" and auto_compact_circuit_is_open(request.runtime_state):
             return LlmCompactCandidate(
                 checkpoint=None,
@@ -135,11 +153,12 @@ class LlmCompactService:
 
         attempts = 0
         retries = 0
+        # 重试循环: 摘要 + 边界校验 + 构造 checkpoint, 成功即返回
         while True:
             attempts += 1
             try:
                 summary = _summarize(
-                    self.summarizer,
+                    self.summarizer,    # 这里会传入系统提示词
                     source_messages,
                     summary_mode=request.summary_mode,
                 )
@@ -164,10 +183,12 @@ class LlmCompactService:
                         checkpoint_id=checkpoint.id,
                     ),
                 )
+            # 边界类错误不可重试: 重试只会得到同样的边界, 直接失败
             except UnconsumedLlmCheckpointBoundaryError:
                 return _failed_candidate(source_fingerprint, retries, "unconsumed_boundary")
             except InvalidLlmCheckpointBoundaryError:
                 return _failed_candidate(source_fingerprint, retries, "invalid_tool_sequence")
+            # 可重试错误: 按重试策略决定是否再来一轮
             except (PromptTooLongError, CompactTimeoutError, NoSummaryError) as error:
                 reason = _failure_reason(error)
                 decision = self.retry_policy.decide(reason, attempt=attempts)
@@ -399,14 +420,11 @@ def _summarize(
 
 
 def normalize_coding_handoff(summary: str) -> str:
-    """Normalize provider output into the stable L4 coding-handoff contract.
+    """把 provider 的输出规整成固定的 L4 交接摘要格式.
 
-    The model supplies only prose; local code owns the public checkpoint
-    structure.  Matching sections retain their supplied body (including a
-    repeated section's later body), while missing sections are explicitly
-    marked as `无`. Unknown Markdown headings are converted to ordinary
-    body text so the resulting handoff has exactly the seven supported
-    headings once each.
+    模型只负责给散文, checkpoint 的公开结构由本地代码兜底: 命中的小节保留正文
+    (重复小节取后出现的), 缺失小节显式标 `无`, 无法识别的 Markdown 标题降级为
+    正文, 保证产出的交接摘要恰好包含七个固定小节各一次.
     """
 
     bodies: dict[str, list[str]] = {heading: [] for heading in CODING_HANDOFF_HEADINGS}

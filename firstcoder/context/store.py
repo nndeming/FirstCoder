@@ -22,14 +22,16 @@ EVENT_ROLE_MAP = {
 
 
 class SessionStoreCorruptError(ValueError):
-    """A persisted event cannot be replayed into a trustworthy session view."""
+    """持久化事件无法重放成可信的会话视图时抛出 (事实文件损坏, 宁可报错也不带着脏状态继续)."""
 
 
 class JsonlSessionStore:
     """append-only JSONL store。
 
-    当前阶段选择 JSONL 是为了让 resume、压缩事件和调试记录都能被人工阅读。后续迁移
-    SQLite 时，外部仍应保留 `append_event/list_events/rebuild_session_view` 这组边界。
+    JSONL 事件文件是事实层: 只增不改, resume 靠从头到尾重放事件还原视图; 压缩也
+    只是追加新事件, 从不回头修改历史事件. 当前阶段选择 JSONL 是为了让 resume,
+    压缩事件和调试记录都能被人工阅读. 后续迁移 SQLite 时, 外部仍应保留
+    `append_event/list_events/rebuild_session_view` 这组边界.
     """
 
     def __init__(self, root: str | Path) -> None:
@@ -60,7 +62,10 @@ class JsonlSessionStore:
         return events
 
     def rebuild_session_view(self, session_id: str) -> SessionView:
-        """重放会话事件日志, 还原出当前内存视图(空会话返回空视图)。"""
+        """重放会话事件日志, 还原出当前内存视图(空会话返回空视图).
+
+        重放是 resume 的唯一入口: 视图不单独落盘, 永远从 append-only 的事实事件重建.
+        """
 
         view = SessionView(session_id=session_id)
         for sequence, event in enumerate(self.list_events(session_id), start=1):
@@ -71,6 +76,7 @@ class JsonlSessionStore:
         return self.sessions_dir / f"{session_id}.jsonl"
 
     def _apply_event(self, view: SessionView, event: SessionEvent, *, sequence: int) -> None:
+        # 重放必须幂等: 同一事件无论重放多少次, 得到的视图都一致, 因此这里只做确定性套用
         # 追加到view.metadata
         if event.type in {"session_created", "session_metadata_updated"}:
             view.metadata = merge_metadata_patch(view.metadata, event.payload)
@@ -138,6 +144,7 @@ def _checkpoint_payload(event: SessionEvent, *, sequence: int) -> dict[str, obje
 
 
 def _apply_compaction_replacements(view: SessionView, event: SessionEvent) -> None:
+    # 压缩替换的重放也要求幂等: 按 (message_id, part_id) 定点替换, 重复套用同一事件结果一致
     event_payload = event.payload.get("event")
     if not isinstance(event_payload, dict):
         return

@@ -15,15 +15,15 @@ IMAGE_INPUT_TOKEN_ESTIMATE = 1_024
 
 @dataclass(frozen=True, slots=True)
 class ContextBudget:
-    context_window: int
-    output_reserve: int
-    input_capacity: int
-    fixed_tokens: int
-    history_tokens: int
-    input_tokens: int
-    high_watermark: int
-    low_watermark: int
-    source: Literal["configured", "assumed"]
+    context_window: int                       # 上下文窗口总大小 (token 数)
+    output_reserve: int                       # 给模型回复预留的输出空间
+    input_capacity: int                       # 输入侧可用量 = 窗口打95折 - 输出预留
+    fixed_tokens: int                         # system 消息 + 工具定义, 每次必带不可压
+    history_tokens: int                       # 可压缩的历史部分
+    input_tokens: int                         # 当前输入总量 = fixed + history
+    high_watermark: int                       # 触发压缩的高压线 (90% 容量)
+    low_watermark: int                        # 压缩的停手目标线 (72% 容量), 与高压线拉开防抖动
+    source: Literal["configured", "assumed"]  # 窗口来自配置还是默认值假设
 
 
 def estimate_text_tokens(text: str) -> int:

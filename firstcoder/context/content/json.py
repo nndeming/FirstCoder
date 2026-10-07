@@ -27,6 +27,12 @@ _IMPORTANT_KEYS = {
 
 @dataclass(slots=True)
 class JsonRouteCompressor:
+    """JSON 输出压缩: 保留结构骨架 (数组的元素 schema/前后元素, 对象的重要键) 和前若干元素, 省略其余.
+
+    优先保留 error/status/summary 等重要键和高分元素; 长字符串截断, 深层嵌套换成
+    带 kept/omitted 计数的摘要节点; 解析失败或空值返回 None.
+    """
+
     max_array_items: int = 12
     max_object_keys: int = 24
     max_string_chars: int = 240

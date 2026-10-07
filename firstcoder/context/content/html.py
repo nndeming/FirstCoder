@@ -15,6 +15,12 @@ _HEADING_TAGS = {"h1", "h2", "h3"}
 
 @dataclass(slots=True)
 class HtmlRouteCompressor:
+    """HTML 输出压缩: 保留 title/heading/可见文本块/链接, 丢掉 script/style/svg 等不可见内容和标签结构.
+
+    文本块去重后按上限截取 (报错关键词块优先), 链接只留前 max_links 条; 解析失败或
+    不像 HTML 时返回 None.
+    """
+
     max_text_blocks: int = 40
     max_links: int = 20
     max_block_chars: int = 240

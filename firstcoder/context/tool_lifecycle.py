@@ -1,8 +1,7 @@
-"""Pure lifecycle classification for effective-tail tool results.
+"""有效尾部 tool_result 的生命周期分类.
 
-This module deliberately only interprets structured, successful results from the
-built-in read and mutation tools.  It neither touches the filesystem nor changes
-session state, so callers can safely rebuild the same index after replay.
+纯函数模块: 只解读内置读取/修改类工具成功结果里的结构化数据 (参数, 路径, 内容指纹),
+不读正文猜语义, 不碰文件系统, 也不改会话状态, 因此调用方可以在重放后安全地重建同一份索引.
 """
 
 from __future__ import annotations
@@ -17,11 +16,11 @@ from firstcoder.context.models import AgentMessage, MessagePart
 
 
 class ToolResultLifecycle(StrEnum):
-    FRESH = "fresh"
-    STALE = "stale"
-    SUPERSEDED = "superseded"
-    DERIVED = "derived"
-    DUPLICATE = "duplicate"
+    FRESH = "fresh"            # 新鲜结果: 任何压缩层都不碰; 失败/未知结果一律按此处理 (fail-open)
+    STALE = "stale"            # 读取之后源文件又被改过, 内容不再可信, 属垃圾级必须清理
+    SUPERSEDED = "superseded"  # 同一目标的读取被更新的读取覆盖, 属垃圾级必须清理
+    DERIVED = "derived"        # 工具派生输出 (非源码读取), 是 L2 路由压缩和 L3 可选清理的对象
+    DUPLICATE = "duplicate"    # 内容指纹与更新的 derived 结果重复, 属垃圾级必须清理
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,8 +79,8 @@ def index_tool_result_lifecycles(
             reason = "derived_tool_output"
             targets: tuple[SourceReadTarget, ...] = ()
 
-            # A failed result is never evidence of a read or mutation, and must
-            # be retained even if it happens to match another output exactly.
+            # fail-open: 失败结果既不能证明读过也不能证明改过, 即使内容与别的输出
+            # 恰好相同也必须按 fresh 保留, 宁可不压也不误删.
             if part.metadata.get("ok") is not True:
                 lifecycle = ToolResultLifecycle.FRESH
                 reason = "failed_or_unknown_result"

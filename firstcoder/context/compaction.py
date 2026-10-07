@@ -36,26 +36,26 @@ CompactionLevel = Literal["l1", "l2", "l3"]
 
 @dataclass(slots=True)
 class CompactionRequest:
-    view: SessionView
-    active_task_hash: str | None
-    target_tokens: int
-    current_turn: int
-    estimate_tokens: Callable[[SessionView], int]
-    consumed_tool_result_part_ids: frozenset[str]
-    enabled_levels: tuple[CompactionLevel, ...] = ("l1", "l2", "l3")
-    required_levels: tuple[CompactionLevel, ...] = ()
-    l2_result_target_tokens: int | None = None
-    force_route_current_text: bool = False
-    force_old_task_compaction: bool = False
+    view: SessionView                                                 # 当前会话视图 (重放得到, 压缩只改它的副本)
+    active_task_hash: str | None                                      # 当前任务边界 hash, L1 按它区分新旧任务来裁剪
+    target_tokens: int                                                # 停手目标线 (通常是 low_watermark)
+    current_turn: int                                                 # 当前轮次, 用于计算 part 的冷度
+    estimate_tokens: Callable[[SessionView], int]                     # token 估算回调, 每级跑完用它重新估一次
+    consumed_tool_result_part_ids: frozenset[str]                     # 兜底红线: 模型已消费的结果集合, 没看过的不能压
+    enabled_levels: tuple[CompactionLevel, ...] = ("l1", "l2", "l3")  # 本次允许跑哪些级, 按序执行
+    required_levels: tuple[CompactionLevel, ...] = ()                 # 必须跑完的级 (如任务切换强制 L2/L3), 达标也不能提前停
+    l2_result_target_tokens: int | None = None                        # 单个 tool_result 的体积阈值, 超过即视为值得清理
+    force_route_current_text: bool = False                            # 强制对当前任务文本也走路由压缩 (manual/prompt_too_long 时用)
+    force_old_task_compaction: bool = False                           # 强制旧任务压缩: 换任务时不再等冷度, 旧任务文本全部修剪
 
 
 @dataclass(slots=True)
 class CompactionEvent:
-    input_fingerprint: str
+    input_fingerprint: str  # 压缩前的视图指纹, 用于识别重复输入和无效压缩
     before_tokens: int
     after_tokens: int
     levels_attempted: list[str]
-    stopped_at: str
+    stopped_at: str  # 压到哪一级达标即停 ("already_within_budget"/"l1"/"l2"/"l3"/"not_reached")
     changed_parts: int
     reason: str = "programmatic_compaction"
     target_tokens: int = 0
@@ -69,11 +69,11 @@ class CompactionEvent:
     success: bool = True
     error: str | None = None
     created_at: str = field(default_factory=utc_now_iso)
-    noop: bool = False
-    deduped: bool = False
+    noop: bool = False     # 本次没有实际改动任何 part
+    deduped: bool = False  # 与上次无效压缩的输入指纹相同, 是重复空跑
     lifecycle_counts: dict[str, int] = field(default_factory=dict)
     level_metrics: dict[str, dict[str, int]] = field(default_factory=dict)
-    archive_ids: list[str] = field(default_factory=list)
+    archive_ids: list[str] = field(default_factory=list)  # 本次替换产生的归档 id, 凭它可取回原文
 
 
 @dataclass(slots=True)
@@ -91,6 +91,12 @@ class CompactionPipeline:
     _seen_noop_fingerprints: set[str] = field(default_factory=set)
 
     def compact(self, request: CompactionRequest) -> CompactionResult:
+        """L1-L3 按序执行, 每级跑完重新估 token, 达标即停 (required 级别除外).
+
+        全程只改视图副本: 成功后由调用方把 replacements 作为压缩事件追加进事实文件,
+        失败或 noop 时事实层不留任何痕迹.
+        """
+
         # 深拷贝当前视图, 防止失败
         view = _clone_view(request.view)
         # 压缩前视图指纹
@@ -129,7 +135,8 @@ class CompactionPipeline:
             consumed_tool_result_part_ids=request.consumed_tool_result_part_ids,
         )
 
-        # 先校验一下是否有必要压缩
+        # 先校验一下是否有必要压缩. 五个条件全部不满足才真的开工: 已达标, 未强制旧任务压缩,
+        # 没有 required 级别, 没有垃圾级候选, 也没有单条超大结果 -- 任一成立都要继续往下走
         if (
             before_tokens <= request.target_tokens
             and not request.force_old_task_compaction
@@ -157,14 +164,17 @@ class CompactionPipeline:
                 ),
             )
 
+        # 逐级压缩的累积器: 试过哪些级, 每级换掉了哪些 part, 每级省下多少 token
         levels_attempted: list[str] = []
         replacements: list[dict[str, object]] = []
         level_metrics: dict[str, dict[str, int]] = {}
         stopped_at = "not_reached"
 
+        # L1 -> L2 -> L3 按序执行, 每级在上一级的结果上继续压
         for level_index, level in enumerate(request.enabled_levels):
             levels_attempted.append(level)
             before_level_tokens = request.estimate_tokens(view)
+            # 注意此处原地修改view, 后续直接基于新view估算压缩结果
             level_replacements = self._apply_level(
                 view,
                 request=request,
@@ -172,6 +182,7 @@ class CompactionPipeline:
                 lifecycle_records=lifecycle_records,
             )
             replacements.extend(level_replacements)
+            # 每级跑完立刻重新估 token, 记录这一级的收益
             after_level_tokens = request.estimate_tokens(view)
             level_metrics[level] = {
                 "before_tokens": before_level_tokens,
@@ -179,6 +190,8 @@ class CompactionPipeline:
                 "saved_tokens": max(0, before_level_tokens - after_level_tokens),
                 "changed_parts": len(level_replacements),
             }
+            # 达标即停的三个例外: 还有 required 级别没走完不能停; L3 没跑且仍有
+            # 垃圾级/超大候选时不能停 (这两项是强制清理, 与整体是否达标无关)
             remaining_levels = request.enabled_levels[level_index + 1 :]
             if (
                 after_level_tokens <= request.target_tokens
@@ -205,6 +218,7 @@ class CompactionPipeline:
                 stopped_at = level
                 break
 
+        # 收尾记账: noop 指纹去重, 同一视图反复空压只记录一次
         after_tokens = request.estimate_tokens(view)
         changed_parts = len(replacements)
         noop = changed_parts == 0
@@ -212,6 +226,7 @@ class CompactionPipeline:
         if noop:
             self._seen_noop_fingerprints.add(input_fingerprint)
 
+        # 压缩事件由调用方追加进事实文件: 换掉了哪些 part, 换成什么, 原文归档在哪
         return CompactionResult(
             view=view,
             event=CompactionEvent(
@@ -830,11 +845,11 @@ def _l3_backing_record(
     session_id: str,
     part: MessagePart,
 ):
-    """Return raw backing for a candidate without archiving L2 text as raw.
+    """取候选 part 的原文归档, 但不会把 L2 的摘要文本当原文再存一次.
 
-    L2 retains its original archive id and payload.  A later L3 projection
-    must use exactly that backing so `retrieve_archive` always returns the
-    pre-route result rather than a compact derivative.
+    被 L2 压过的 part 自身带着 L2 归档的 archive_id, 原文以那份归档为准; L3 换占位符时
+    必须复用同一份归档, 保证 retrieve_archive 取回的永远是路由压缩前的原始结果,
+    而不是压缩过的衍生品.
     """
 
     archive_id = part.metadata.get("archive_id")

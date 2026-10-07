@@ -23,6 +23,11 @@ _IMPORTANT_RE = re.compile(r"\b(TODO|FIXME|BUG|HACK|ERROR|WARN|WARNING|raise|thr
 
 @dataclass(slots=True)
 class SourceCodeRouteCompressor:
+    """源码片段压缩: 保留 import/类型定义/函数签名 (带少量函数体预览) 和 TODO/报错等关键行, 删掉普通函数体.
+
+    行数超上限时按行优先级 (import > 签名 > 类型 > 关键注释) 截断; 不像代码的输入返回 None.
+    """
+
     max_body_lines_after_signature: int = 2
     max_total_lines: int = 120
 

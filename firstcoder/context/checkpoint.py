@@ -1,4 +1,8 @@
-"""checkpoint 与简单 resume 投影所需的数据结构。"""
+"""checkpoint 与简单 resume 投影所需的数据结构.
+
+checkpoint 是 L4 摘要落盘的事实形式: 作为事件追加进 JSONL, 投影时由 ContextBuilder
+替换成一条 summary 消息, 旧历史不删, 只是不再出现在 provider 请求里.
+"""
 
 from __future__ import annotations
 

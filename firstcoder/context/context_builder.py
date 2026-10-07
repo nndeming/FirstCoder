@@ -35,6 +35,12 @@ class ContextBuilder:
         checkpoint: Checkpoint | None = None,
         store_root: Path | None = None,
     ) -> list[ChatMessage]:
+        """把 SessionView 投影成 provider 的 ChatMessage 列表.
+
+        投影是每次请求前现算的, 没有任何缓存; 压缩只发生在这一侧的输入视图上,
+        不碰 append-only 的事实文件, 因此投影失败重来也不会损坏历史.
+        """
+
         active_checkpoint = checkpoint or CheckpointIndex(view.checkpoints).latest()
         messages = list(system_prefix or [])
         if active_checkpoint is not None:
@@ -173,6 +179,7 @@ def _project_tool_part(part: MessagePart) -> ChatMessage:
 
 
 def _validate_tail_boundary(messages: list[AgentMessage]) -> None:
+    # 红线: 投影不能以孤立 tool result 开头, provider 要求 tool result 必须紧跟其 assistant tool_call
     if not messages:
         return
     first = messages[0]

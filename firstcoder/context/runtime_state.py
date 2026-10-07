@@ -74,18 +74,18 @@ class SessionRuntimeState:
     """不应该塞进自然语言消息的会话状态。"""
 
     session_id: str
-    active_task_hash: str | None = None
-    candidate_task_hash: str | None = None
-    candidate_task_basis_message_id: str | None = None
-    task_hash_stable_count: int = 0
-    latest_checkpoint_id: str | None = None
-    auto_compact_failure_count: int = 0
-    auto_compact_disabled_until: str | None = None
-    last_auto_compact_failure_reason: str | None = None
+    active_task_hash: str | None = None                  # 当前任务边界 hash, L1 压缩按它区分新旧任务来裁剪
+    candidate_task_hash: str | None = None               # 观察中的候选任务 hash, 稳定后才切换
+    candidate_task_basis_message_id: str | None = None   # 候选 hash 的锚点消息 id
+    task_hash_stable_count: int = 0                      # 候选 hash 连续出现次数, 用于防抖
+    latest_checkpoint_id: str | None = None              # 最近一次 L4 提交的 checkpoint id
+    auto_compact_failure_count: int = 0                  # 熔断: 自动压缩连续失败次数
+    auto_compact_disabled_until: str | None = None       # 熔断: 失败达阈值后的禁用截止时间
+    last_auto_compact_failure_reason: str | None = None  # 熔断: 最近一次自动压缩失败原因
     system_prompt_fingerprint: str | None = None
-    last_compaction_input_fingerprint: str | None = None
-    last_no_effect_compaction_fingerprint: str | None = None
-    consumed_tool_result_part_ids: set[str] = field(default_factory=set)
+    last_compaction_input_fingerprint: str | None = None                  # 上次 L4 压缩的输入指纹, 源没变就跳过
+    last_no_effect_compaction_fingerprint: str | None = None              # 上次无效压缩的输入指纹, 防止对同一视图重复空压
+    consumed_tool_result_part_ids: set[str] = field(default_factory=set)  # 兜底红线: 模型已消费的结果, 没看过的不能压
     recent_compaction_events: list[CompactionHistoryEntry] = field(default_factory=list)
 
     def observe_task_hash_candidate(

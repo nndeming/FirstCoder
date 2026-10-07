@@ -19,6 +19,11 @@ class _SearchMatch:
 
 @dataclass(slots=True)
 class SearchResultsRouteCompressor:
+    """search/grep 输出压缩: 保留文件级统计和每文件前 N 条命中 (优先首尾与报错关键词命中), 省略其余.
+
+    超出 max_files 的文件只留一个"省略 N 个文件"的汇总行; 解析不出命中格式时返回 None, 交回路由.
+    """
+
     max_matches_per_file: int = 5
     max_files: int = 15
 
