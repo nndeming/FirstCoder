@@ -1,4 +1,4 @@
-"""Benchmark-only AgentLoop variants for the three causal experiment arms."""
+"""仅供基准使用的 AgentLoop 变体，对应三种因果实验条件。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from benchmark.task_boundary_compaction.models import Arm
 
 
 class BenchmarkAgentLoop(AgentLoop):
-    """Preserve production control flow while selectively disabling one arm behavior."""
+    """保留生产环境控制流程，并按需关闭某个实验条件下的单项行为。"""
 
     def __init__(self, *args, arm: Arm, **kwargs) -> None:
         self.arm = arm

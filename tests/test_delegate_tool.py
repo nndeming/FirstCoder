@@ -212,11 +212,11 @@ def test_background_delegate_returns_placeholder_and_notification(tmp_path) -> N
 
 
 def test_coder_delegate_background_rejected_without_git_repo(tmp_path) -> None:
-    """Background coder needs worktree isolation; a non-git project must be refused.
+    """后台编码代理需要工作树隔离，非 Git 项目必须拒绝运行。
 
-    Phase 4 allows background coder only when a git worktree can be created.  With
-    no permission manager / non-git root, isolation is unavailable, so the call is
-    rejected up front with ``worktree_unavailable`` and no job is started.
+    第四阶段仅在能够创建 Git 工作树时允许后台编码代理。
+    缺少权限管理器或根目录不是 Git 仓库时，无法隔离，
+    因此应直接以 ``worktree_unavailable`` 拒绝，且不启动任务。
     """
 
     store = JsonlSessionStore(tmp_path)
@@ -257,7 +257,7 @@ def _write_call(call_id: str, path: str, content: str) -> ToolCall:
 
 
 def test_isolated_coder_writes_only_in_worktree(tmp_path) -> None:
-    """Phase 4: a worktree-isolated coder mutates the worktree, never the parent tree."""
+    """第四阶段：隔离的编码代理只修改独立工作树，不修改父会话工作树。"""
 
     from firstcoder.permissions.manager import PermissionManager
     from firstcoder.permissions.policy import DefaultPermissionPolicy
@@ -267,7 +267,7 @@ def test_isolated_coder_writes_only_in_worktree(tmp_path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_git_repo(repo)
-    # Dirty parent proves isolation does not depend on a clean parent tree.
+    # 故意保留父目录的未提交改动，验证隔离不依赖父工作树干净。
     (repo / "seed.txt").write_text("seed dirty\n", encoding="utf-8")
 
     write_call = _write_call("w1", "newfile.py", "print('hi')\n")
@@ -314,7 +314,7 @@ def test_isolated_coder_writes_only_in_worktree(tmp_path) -> None:
 
 
 def test_isolated_coder_can_delete_inside_worktree_without_parent_delete(tmp_path) -> None:
-    """DELETE_PATH is allowed only in the isolated worktree, never in the parent tree."""
+    """DELETE_PATH 仅允许删除隔离工作树中的路径，不能删除父会话中的路径。"""
 
     from firstcoder.permissions.manager import PermissionManager
     from firstcoder.permissions.policy import DefaultPermissionPolicy
@@ -363,7 +363,7 @@ def test_isolated_coder_can_delete_inside_worktree_without_parent_delete(tmp_pat
 
 
 def test_isolated_coder_waiting_for_permission_is_failure_with_diff(tmp_path) -> None:
-    """If a child still needs user input, background delegate must not report success."""
+    """子代理仍需用户输入时，后台委派不得报告成功。"""
 
     from firstcoder.agent.subagent import SubagentRequest, SubagentRunner
 
@@ -406,7 +406,7 @@ def test_isolated_coder_waiting_for_permission_is_failure_with_diff(tmp_path) ->
 
 
 def test_background_coder_uses_worktree_and_leaves_parent_untouched(tmp_path) -> None:
-    """Phase 4: background delegate for coder runs isolated and reports a diff summary."""
+    """第四阶段：编码角色的后台委派应隔离运行，并报告差异摘要。"""
 
     from firstcoder.permissions.manager import PermissionManager
     from firstcoder.permissions.policy import DefaultPermissionPolicy
@@ -473,7 +473,7 @@ def test_background_coder_uses_worktree_and_leaves_parent_untouched(tmp_path) ->
 
 
 def test_isolated_coder_without_git_repo_returns_error(tmp_path) -> None:
-    """When isolation is requested but the project is not a git repo, fail cleanly."""
+    """要求隔离但项目不是 Git 仓库时，应妥善返回失败。"""
 
     from firstcoder.agent.subagent import SubagentRequest, SubagentRunner
 

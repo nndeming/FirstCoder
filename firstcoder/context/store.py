@@ -28,12 +28,12 @@ class SessionStoreCorruptError(ValueError):
 
 
 class JsonlSessionStore:
-    """append-only JSONL store。
+    """仅追加写入的 JSONL 存储。
 
-    JSONL 事件文件是事实层: 只增不改, resume 靠从头到尾重放事件还原视图; 压缩也
-    只是追加新事件, 从不回头修改历史事件. 当前阶段选择 JSONL 是为了让 resume,
-    压缩事件和调试记录都能被人工阅读. 后续迁移 SQLite 时, 外部仍应保留
-    `append_event/list_events/rebuild_session_view` 这组边界.
+    JSONL 事件文件是事实来源：只增不改，恢复会话时从头重放事件以还原视图。
+    压缩也只追加新事件，不修改历史。当前采用 JSONL，便于人工阅读会话恢复、
+    压缩与调试记录。后续迁移至 SQLite 时，对外仍应保留
+    `append_event/list_events/rebuild_session_view` 这组接口。
     """
 
     def __init__(self, root: str | Path) -> None:

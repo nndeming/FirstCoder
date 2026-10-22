@@ -1,4 +1,4 @@
-"""Shared model-facing formatting for task-plan mutation tools."""
+"""任务计划修改工具共享的模型可见输出格式。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from firstcoder.tools.types import ToolResult, make_error_result, make_text_resu
 
 
 def format_task_plan_snapshot(plan: TaskPlan, projection: dict[str, object]) -> str:
-    """Render the concise authoritative task state that the model must see."""
+    """渲染模型必须看到的精简权威任务状态。"""
 
     lines = [f"Task plan revision {plan.revision} ({plan.mode})", ""]
     for task in ordered_tasks(plan):

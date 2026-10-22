@@ -1,4 +1,4 @@
-"""Skill system data models."""
+"""技能系统的数据模型。"""
 
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ class SkillCatalog:
     index_content: str = ""
 
     def resolved(self) -> "SkillCatalog":
-        """Return the unique effective catalog used by runtime consumers."""
+        """返回运行时使用的唯一有效技能目录。"""
 
         from firstcoder.skills.catalog import resolve_skill_catalog
 

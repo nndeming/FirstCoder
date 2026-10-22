@@ -1,4 +1,4 @@
-"""Shared sandbox access state."""
+"""共享的沙箱访问状态。"""
 
 from __future__ import annotations
 

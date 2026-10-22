@@ -128,8 +128,8 @@ def _run_command_with_process_group(
 
     if interrupted or timed_out:
         _terminate_process_group(process)
-        # communicate() again drains everything the process group emitted before
-        # termination; this is the output that must accompany a timeout result.
+        # 再次调用 communicate()，收集进程组在终止前输出的全部内容；
+        # 超时结果必须包含这些输出。
         stdout, stderr = process.communicate()
     stdout, stdout_truncated = truncate_head_tail(stdout, max_output_chars)
     stderr, stderr_truncated = truncate_head_tail(stderr, max_output_chars)
@@ -167,7 +167,7 @@ def _run_command_with_process_group(
 
 
 def _process_group_kwargs() -> dict[str, Any]:
-    """Start each command in its own process group/session."""
+    """为每条命令创建独立的进程组或会话。"""
 
     if os.name == "nt":
         return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
@@ -175,7 +175,7 @@ def _process_group_kwargs() -> dict[str, Any]:
 
 
 def _resource_limit_kwargs() -> dict[str, Any]:
-    """Apply CPU/memory rlimits to child processes on POSIX."""
+    """在 POSIX 系统中为子进程设置 CPU 与内存资源限制。"""
 
     if os.name == "nt" or resource is None:
         return {}
@@ -201,7 +201,7 @@ def process_group_kwargs() -> dict[str, int | bool]:
 
 
 def _terminate_process_group(process: subprocess.Popen[str]) -> None:
-    """Terminate the command and every descendant in its process group."""
+    """终止命令及其进程组中的所有后代进程。"""
 
     if os.name == "nt":
         _taskkill_process_tree(process.pid)
@@ -219,9 +219,9 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=1)
     except subprocess.TimeoutExpired:
         pass
-    # The leader may have exited while a descendant ignored SIGTERM.  Kill the
-    # group unconditionally after the grace period so those descendants cannot
-    # survive merely because Popen's direct child is already reaped.
+    # 主进程可能已退出，但后代进程仍可能忽略 SIGTERM。宽限期结束后，
+    # 无条件终止整个进程组，避免仅因 Popen 的直接子进程已被回收，
+    # 就让后代进程继续存活。
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -237,7 +237,7 @@ def terminate_process_group(process: subprocess.Popen[str]) -> None:
 
 
 def _taskkill_process_tree(pid: int) -> None:
-    """Best-effort Windows equivalent of killing a POSIX process group."""
+    """在 Windows 上尽力实现与 POSIX 进程组终止相同的效果。"""
 
     try:
         subprocess.run(

@@ -1,8 +1,7 @@
-"""Session-scoped retrieval for archived tool-result originals.
+"""在当前会话范围内取回已归档工具结果的原文。
 
-The compaction pipeline stores an immutable original alongside a compact
-placeholder.  This tool is deliberately created per session so an agent can
-only retrieve archives belonging to its current session.
+压缩流水线在精简占位符之外另存不可变原文。工具按会话单独创建，
+确保代理只能取回当前会话所属的归档。
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ _OMITTED = "[... omitted ...]"
 
 
 def _bounded_max_chars(value: int) -> int | None:
-    """Normalize the public character budget without allowing unbounded output."""
+    """规范化对外字符预算，禁止无界输出。"""
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= _MAX_CHARS_LIMIT:
         return None
     return value
@@ -33,7 +32,7 @@ def _clip(text: str, max_chars: int) -> tuple[str, bool]:
 
 
 def _query_projection(raw: str, query: str, max_chars: int) -> tuple[str, int, bool]:
-    """Return matching numbered line windows, joined within the total budget."""
+    """返回匹配的带行号文本窗口，并确保拼接结果不超过总预算。"""
     lines = raw.splitlines()
     needle = query.casefold()
     matching_indexes = [index for index, line in enumerate(lines) if needle in line.casefold()]
@@ -59,20 +58,19 @@ def _query_projection(raw: str, query: str, max_chars: int) -> tuple[str, int, b
     projection = "\n".join(blocks)
     if len(projection) <= max_chars:
         return projection, len(matching_indexes), False
-    # A blind prefix makes it unclear whether further matches exist.  Reserve a
-    # stable omission marker whenever the caller's budget can accommodate it.
+    # 仅截取前缀无法判断后面是否还有匹配；预算允许时，
+    # 应预留一个固定的省略标记。
     if max_chars >= len(_OMITTED):
         return projection[: max_chars - len(_OMITTED)] + _OMITTED, len(matching_indexes), True
     return projection[:max_chars], len(matching_indexes), True
 
 
 def _diagnostic(record, raw: str, max_chars: int) -> tuple[str, bool]:
-    """Build a bounded browse hint with metadata and both raw-content ends.
+    """生成长度受限的浏览提示，包含元数据及原文首尾。
 
-    A retrieval with no query must be useful without accidentally becoming a
-    second, unbounded archive-read API.  Very small limits retain as much of
-    the instruction as fits; larger limits include stable metadata and evenly
-    allocated head/tail excerpts.
+    未指定查询的取回请求也应有用，但不能变成另一个无界归档读取接口。
+    限额较小时尽量保留操作指引；限额较大时加入稳定元数据，
+    并为首尾摘录均匀分配空间。
     """
     instruction = "Use a query or full=true to retrieve the original content."
     if max_chars < len(instruction):
@@ -92,8 +90,8 @@ def _diagnostic(record, raw: str, max_chars: int) -> tuple[str, bool]:
     head_chars = excerpt_budget // 2
     tail_chars = excerpt_budget - head_chars
     if len(raw) <= excerpt_budget:
-        # Keep the same labels so callers do not have to infer which form was
-        # returned, even when the whole original happens to fit the excerpt.
+        # 即使整份原文能放进摘录，也使用相同的标签，
+        # 让调用方无需推测返回的是哪种形式。
         head = raw[:head_chars]
         tail = raw[head_chars:]
         truncated = False
@@ -107,7 +105,7 @@ def _diagnostic(record, raw: str, max_chars: int) -> tuple[str, bool]:
 
 
 def _error(message: str) -> ToolResult:
-    """Return a safe, user-actionable error without leaking local paths."""
+    """返回安全且便于用户处理的错误信息，不泄漏本地路径。"""
     return make_error_result("retrieve_archive", message)
 
 
@@ -117,11 +115,10 @@ def create_retrieve_archive_tool(
     session_id: str,
     current_turn: Callable[[], int],
 ) -> Tool:
-    """Create the session-bound ``retrieve_archive`` tool.
+    """创建绑定当前会话的 ``retrieve_archive`` 工具。
 
-    ``current_turn`` is intentionally a callback: the session writer advances
-    after tool construction, and each successful retrieval must protect the
-    result until the turn in which it was actually retrieved.
+    ``current_turn`` 使用回调，因为工具创建后会话写入器仍会推进轮次；
+    每次成功取回的结果必须受到保护，直到实际取回时所在的轮次结束。
     """
 
     def retrieve_archive(

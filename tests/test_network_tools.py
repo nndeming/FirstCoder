@@ -127,7 +127,7 @@ def test_web_search_falls_back_to_exa_with_api_key(monkeypatch, tmp_path):
         if call_count == 1:
             # Parallel 先失败
             raise web_search_module.error.URLError("parallel failed")
-        # Exa
+        # Exa 搜索服务
         captured["url"] = req.full_url
         captured["body"] = req.data.decode("utf-8")
         return _fake_web_search_response("exa results")

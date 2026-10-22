@@ -88,7 +88,7 @@ class PermissionManager:
         )
 
     def build_prewrite_review_confirmation(self, request: PermissionRequest) -> UserInputRequest:
-        """Build a one-operation review gate without changing saved permission grants."""
+        """构建仅针对本次操作的审查关口，不改变已保存的权限授权。"""
 
         request = self.normalize_request(request)
         return UserInputRequest(

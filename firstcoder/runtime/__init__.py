@@ -1,7 +1,6 @@
-"""Cross-cutting runtime primitives shared by agent, tools, permissions, and utils.
+"""代理、工具、权限与工具函数共享的运行时基础组件。
 
-These types intentionally live outside `agent/` so lower layers do not import
-upward into the orchestration package.
+这些类型放在 `agent/` 之外，避免底层模块反向导入上层编排包。
 """
 
 from firstcoder.runtime.cancellation import (

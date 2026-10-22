@@ -1,4 +1,4 @@
-"""Deterministically seed a completed old-task transcript without synthetic tool state."""
+"""以确定方式填充已完成的旧任务对话，不构造合成工具状态。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from firstcoder.providers.types import ChatResponse
 
 @dataclass(frozen=True, slots=True)
 class SeededContext:
-    """The safe, measurable result of writing a task-A transcript."""
+    """写入任务 A 对话记录后，得到可安全记录和度量的结果。"""
 
     case_id: str
     task_hash: str
@@ -30,7 +30,7 @@ def seed_old_task_context(
     target_input_tokens: int,
     estimate_budget: Callable[[SessionView], ContextBudget],
 ) -> SeededContext:
-    """Append deterministic ordinary task-A messages below the AUTO high watermark."""
+    """追加确定的普通任务 A 消息，保持在 AUTO 模式的高水位以下。"""
 
     if not case_id.strip():
         raise ValueError("case_id must not be blank")

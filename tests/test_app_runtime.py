@@ -667,12 +667,11 @@ async def test_agent_chat_runner_streaming_exposes_pending_user_input(tmp_path) 
 
 @pytest.mark.anyio
 async def test_agent_chat_runner_streaming_resume_rebinds_live_event_handlers(tmp_path) -> None:
-    """Resume must rebind handlers onto the reused pending loop.
+    """恢复时必须把处理器重新绑定到复用的待处理循环。
 
-    The TUI installs a new stream/tool handler (and turn token) when the user
-    answers a permission prompt. If the paused AgentLoop keeps the pre-pause
-    closures, live tool/stream UI updates are filtered out as stale and the
-    screen freezes on "resuming with permission answer...".
+    用户回答权限提示后，TUI 会安装新的流式处理器、工具处理器与轮次令牌。
+    若暂停的 AgentLoop 仍持有旧闭包，实时工具与流式界面更新会被当作过期消息过滤，
+    导致界面停留在“收到权限回答后正在恢复”的状态。
     """
 
     store = JsonlSessionStore(tmp_path / ".firstcoder")

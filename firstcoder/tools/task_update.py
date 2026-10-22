@@ -1,4 +1,4 @@
-"""Atomic incremental task-plan update tool."""
+"""原子增量更新任务计划的工具。"""
 
 from __future__ import annotations
 

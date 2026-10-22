@@ -1,4 +1,4 @@
-"""Immutable, JSON-safe data models for task-boundary benchmark trials."""
+"""任务边界基准试验使用的不可变、可安全序列化为 JSON 的数据模型。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any, Literal, Mapping
 
 
 class Arm(StrEnum):
-    """The fixed causal experiment arms."""
+    """固定的因果实验条件。"""
 
     AUTO_ONLY = "auto_only"
     CLASSIFIER_ONLY = "classifier_only"
@@ -26,7 +26,7 @@ _VALID_CALL_KINDS = frozenset({"main", "classifier", "l4"})
 
 @dataclass(frozen=True, slots=True)
 class TurnSpec:
-    """One task-B user turn and its expected hidden-classifier decision."""
+    """单轮任务 B 用户输入及其预期的隐藏分类器决策。"""
 
     message: str
     expected_decision: Decision
@@ -40,7 +40,7 @@ class TurnSpec:
 
 @dataclass(frozen=True, slots=True)
 class BenchmarkCase:
-    """A two-or-more-turn task-B benchmark case."""
+    """包含至少两轮任务 B 的基准测试用例。"""
 
     case_id: str
     kind: CaseKind
@@ -68,7 +68,7 @@ class BenchmarkCase:
 
 @dataclass(frozen=True, slots=True)
 class ProviderCallMetric:
-    """Token and latency metadata for one provider call, without its content."""
+    """单次模型服务调用的词元与延迟元数据，不包含调用内容。"""
 
     kind: CallKind
     input_tokens: int | None
@@ -108,7 +108,7 @@ class ProviderCallMetric:
 
 @dataclass(frozen=True, slots=True)
 class CompactionMetric:
-    """A compaction event observed in one trial's persisted JSONL."""
+    """从单次试验持久化 JSONL 中观测到的压缩事件。"""
 
     trigger: str
     event_type: str
@@ -138,7 +138,7 @@ class CompactionMetric:
 
 @dataclass(frozen=True, slots=True)
 class TrialResult:
-    """The complete, content-free result of one isolated trial."""
+    """单次隔离试验的完整结果，不含对话内容。"""
 
     case_id: str
     arm: Arm
@@ -266,7 +266,7 @@ class TrialResult:
 
 @dataclass(frozen=True, slots=True)
 class ComparisonRow:
-    """One paired arm comparison for a case and metric."""
+    """同一用例与指标下的一组配对实验条件比较。"""
 
     case_id: str
     comparison: str

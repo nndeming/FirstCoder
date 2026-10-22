@@ -50,10 +50,10 @@ class ContextBuilder:
 
         tail_messages = self._tail_messages(view, checkpoint=active_checkpoint)
         if _has_trimmed_text(tail_messages):
-            # One aggregate marker keeps the provider informed without adding a
-            # synthetic message for each forgotten part or splitting a tool
-            # transaction.  It belongs after the checkpoint and before the
-            # real tail, therefore it cannot become an orphan tool result.
+            # 使用一个汇总标记告知模型，避免为每个已遗忘片段添加合成消息，
+            # 也避免拆开一次工具调用与结果的完整交互。
+            # 标记放在检查点之后、真实尾部上下文之前，
+            # 因此不会形成没有对应调用的工具结果。
             messages.append(ChatMessage(role="user", content="[Earlier dialogue trimmed]"))
         latest_user_id = latest_user_message_id(tail_messages)
         for message in tail_messages:
@@ -66,7 +66,7 @@ class ContextBuilder:
         return messages
 
     def projected_tool_result_part_ids(self, view: SessionView) -> tuple[str, ...]:
-        """Return tool results that are visible in the effective provider tail."""
+        """返回最终发送给模型的尾部上下文中可见的工具结果。"""
 
         checkpoint = CheckpointIndex(view.checkpoints).latest()
         tail = self._tail_messages(view, checkpoint=checkpoint)
@@ -131,9 +131,9 @@ class ContextBuilder:
                 message,
                 preserve_trimmed_text=preserve_trimmed_text or any(part.kind == "tool_call" for part in message.parts),
             )
-            # A fully trimmed ordinary assistant turn must not become a blank
-            # provider message.  Assistant messages with tool calls are still
-            # emitted even when their visible text happens to be empty.
+            # 被完全裁掉的普通助手轮次不能生成空白的模型请求消息。
+            # 带工具调用的助手消息则仍需发送，
+            # 即使其可见文本恰好为空。
             return [projected] if projected.content or projected.tool_calls else []
 
         if message.role == "user":
@@ -142,9 +142,9 @@ class ContextBuilder:
             # message id，程序侧再据此生成稳定 task hash。
             content = _with_basis_message_id(message.id, visible_content)
             content_parts = _project_user_content_parts(message.parts, content=content, store_root=store_root)
-            # The internal context anchor alone must not turn a fully trimmed
-            # ordinary user turn into a blank provider message. Image-only
-            # messages remain meaningful through their rich content parts.
+            # 内部上下文锚点本身，不应让已完全裁掉的普通用户轮次
+            # 变成空白的模型请求消息。仅含图片的消息
+            # 仍通过富内容片段表达有效信息。
             if not visible_content and content_parts is None:
                 return []
             return [ChatMessage(role="user", content=content, content_parts=content_parts)]
@@ -207,13 +207,11 @@ def _is_visible_text_part(part: MessagePart) -> bool:
 
 
 def _collapse_identical_adjacent_duplicate_tool_calls(messages: list[AgentMessage]) -> list[AgentMessage]:
-    """Ignore a narrowly defined duplicate created while pausing for user input.
+    """仅忽略暂停等待用户输入时产生的特定重复消息。
 
-    A historical bug could append the exact same assistant tool-call response twice
-    when TaskPlan reconciliation entered a permission pause. Keep the first durable fact
-    and drop only an immediately adjacent assistant message whose visible text and
-    complete tool-call identity are identical.  All other invalid sequences still
-    reach ``validate_tool_call_sequence`` and fail closed.
+    历史缺陷会在 TaskPlan 状态核对进入权限暂停时，重复追加相同的助手工具调用响应。
+    保留首条持久化记录，仅丢弃紧邻且可见文本及完整工具调用标识均相同的助手消息。
+    其他非法序列仍交给 ``validate_tool_call_sequence`` 检查并拒绝处理。
     """
 
     collapsed: list[AgentMessage] = []
@@ -255,11 +253,10 @@ def _project_user_content_parts(
     content: str,
     store_root: Path | None,
 ) -> list[ContentPart] | None:
-    """Build provider-neutral rich content from persisted user attachments.
+    """根据已持久化的用户附件，构建不依赖具体模型服务的富内容。
 
-    Text remains in ``ChatMessage.content`` for legacy callers.  Images are only
-    read from the session attachment store at request construction time, so the
-    JSONL event log contains paths and metadata rather than base64 payloads.
+    文本仍保存在 ``ChatMessage.content`` 中，以兼容旧调用方。图片仅在构造请求时
+    从会话附件存储读取，因此 JSONL 事件日志只包含路径和元数据，不包含 base64 数据。
     """
 
     content_parts = [ContentPart(type="text", text=content)]

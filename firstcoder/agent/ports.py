@@ -1,4 +1,4 @@
-"""Stable protocol ports for agent orchestration boundaries."""
+"""代理编排边界使用的稳定协议接口。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,6 @@ from firstcoder.context.manager import ContextCompactRequest, ContextCompactResu
 
 
 class ContextManagerLike(Protocol):
-    """Minimal context-window manager surface used by AgentLoop."""
+    """AgentLoop 所需的最小上下文窗口管理接口。"""
 
     def compact_if_needed(self, request: ContextCompactRequest) -> ContextCompactResult: ...

@@ -96,7 +96,7 @@ class AgentMessage:
 
 
 def latest_user_message_id(messages: list[AgentMessage]) -> str | None:
-    """Return the latest user message ID, if the history contains one."""
+    """返回最近一条用户消息的 ID；历史中没有用户消息时返回空值。"""
 
     for message in reversed(messages):
         if message.role == "user":

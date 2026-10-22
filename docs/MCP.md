@@ -31,13 +31,13 @@ or `disabled`) is process-local and is rebuilt when FirstCoder starts.
 Use the CLI to write global MCP configuration without editing TOML:
 
 ```sh
-# Local stdio server. Everything after the name is its command argv.
+# 本地标准输入输出服务：名称之后的内容均为启动命令及参数。
 firstcoder mcp add everything npx -y @modelcontextprotocol/server-everything
 
-# Remote Streamable HTTP server.
+# 远程流式 HTTP 服务。
 firstcoder mcp add parallel --url https://search.parallel.ai/mcp
 
-# Local variables and remote headers are kept in TOML but never printed by list.
+# 本地环境变量与远程请求头保存在 TOML 中，但 list 命令不会打印它们。
 firstcoder mcp add local-db --env DATABASE_URL='{env:DATABASE_URL}' uvx my-db-mcp
 firstcoder mcp add company --url https://mcp.example.com/mcp \
   --header 'Authorization=Bearer {env:COMPANY_MCP_TOKEN}'

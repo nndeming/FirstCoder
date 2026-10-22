@@ -573,10 +573,9 @@ def _make_route_router(*, preview_chars: int) -> RouteCompactRouter:
 
 
 def _l2_compacted_by(value: object) -> str:
-    """Translate the existing route labels at the L2 ownership boundary.
+    """在 L2 负责的边界处转换既有路由标签。
 
-    Content compressors deliberately remain independently usable.  The
-    pipeline is where their output acquires its L2 semantic label.
+    内容压缩器保持独立可用；由流水线为其输出赋予 L2 层的语义标签。
     """
 
     label = str(value or "l2_route")
@@ -793,9 +792,9 @@ def _can_archive_l3_part(
         return False
     if lifecycle is None:
         return False
-    # L3 may turn a raw result or its L2 projection into a placeholder.  It
-    # must not consume a pinned/retrieved result or replay a legacy/terminal
-    # compaction projection whose backing is not this L2 flow's raw record.
+    # L3 可以将原始结果或其 L2 投影视图转为占位符，但不能处理
+    # 已固定或已取回的结果，也不能重放旧版或终态压缩投影，
+    # 因为这些投影的底层记录并非当前 L2 流程的原始记录。
     state = str(part.metadata.get("compaction_state") or "raw")
     if state not in {"raw", "l2_route_compacted"}:
         return False

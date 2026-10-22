@@ -1,4 +1,4 @@
-"""Execute isolated three-arm task-boundary compaction benchmark trials."""
+"""执行隔离的三组任务边界压缩基准试验。"""
 
 from __future__ import annotations
 
@@ -60,12 +60,12 @@ _DEFAULT_PROVIDER_TIMEOUT_SECONDS = 45.0
 
 
 class BenchmarkValidityError(RuntimeError):
-    """Raised after all trial artifacts exist but the required full-arm event is absent."""
+    """所有试验产物已保存，但缺少要求的完整实验组事件时抛出的异常。"""
 
 
 @dataclass(frozen=True, slots=True)
 class _ResolvedProviders:
-    """The main and hidden-classifier routes for one isolated trial."""
+    """单次隔离试验的主模型与隐藏分类器路由。"""
 
     main_provider: ChatProvider
     classifier_provider: ChatProvider
@@ -76,7 +76,7 @@ class _ResolvedProviders:
 
 @dataclass(frozen=True, slots=True)
 class _RecordingRoutes:
-    """One independently configured set of observed provider routes."""
+    """一组独立配置、受观测的模型服务路由。"""
 
     resolved: _ResolvedProviders
     main: RecordingProvider
@@ -86,7 +86,7 @@ class _RecordingRoutes:
 
 @dataclass(frozen=True, slots=True)
 class RunConfig:
-    """All mutable state for a trial lives below ``output_root/run_id``."""
+    """试验的全部可变状态均存放在 ``output_root/run_id`` 下。"""
 
     output_root: Path
     run_id: str
@@ -131,7 +131,7 @@ class RunConfig:
 
 
 def run_case(case: CaseDefinition, *, arm: Arm, config: RunConfig) -> TrialResult:
-    """Run one arm in a new private work area and retain only sanitized artifacts."""
+    """在全新私有工作区运行一个实验组，仅保留脱敏后的产物。"""
 
     benchmark_case = case.benchmark_case
     trial_root = config.output_root / config.run_id / benchmark_case.case_id / arm.value
@@ -270,7 +270,7 @@ def run_aider_chain_case(
     arms: Iterable[Arm],
     config: RunConfig,
 ) -> list[TrialResult]:
-    """Record one real task A, then replay it into isolated task-B arm trials."""
+    """录制一次真实任务 A，再重放到隔离的任务 B 各实验组中。"""
 
     arm_list = tuple(arms)
     case_root = config.output_root / config.run_id / case.case_id
@@ -334,11 +334,10 @@ def _write_capture_provider_error_results(
     routes: _RecordingRoutes,
     elapsed_seconds: float,
 ) -> list[TrialResult]:
-    """Persist every arm when the shared task-A capture cannot be completed.
+    """无法完成共享的任务 A 捕获时，保存所有实验组的结果。
 
-    No task-B replay is possible without a complete private capture. Recording
-    each skipped arm as a provider error preserves matrix shape and lets later
-    cases run, while keeping these rows out of causal aggregation.
+    没有完整私有捕获就无法重放任务 B。将各跳过的实验组记录为模型服务错误，
+    可保留实验矩阵形状并继续运行后续用例，同时将这些记录排除在因果汇总之外。
     """
 
     recorded_task_a_calls = _provider_metrics(routes)
@@ -393,7 +392,7 @@ def _run_aider_chain_arm(
     captured_data_root: Path,
     recorded_task_a_calls: tuple[ProviderCallMetric, ...],
 ) -> TrialResult:
-    """Run task B once from copied task-A session data and a fresh B project."""
+    """基于复制的任务 A 会话数据与全新的 B 项目，运行一次任务 B。"""
 
     benchmark_case = case.benchmark_case
     trial_root = config.output_root / config.run_id / case.case_id / arm.value
@@ -510,7 +509,7 @@ def run_matrix(
     repetitions: int,
     config: RunConfig,
 ) -> list[TrialResult]:
-    """Run every case in a deterministic shuffled arm order without reusing a session."""
+    """以确定性打乱的实验组顺序运行每个用例，不复用会话。"""
 
     if repetitions <= 0:
         raise ValueError("repetitions must be positive")
@@ -554,7 +553,7 @@ def _materialize_case(case: CaseDefinition, *, project_root: Path, source_repo_r
 
 
 def _resolve_providers(config: RunConfig) -> _ResolvedProviders:
-    """Resolve the main and classifier models without consulting production runtime wiring."""
+    """解析主模型与分类器模型，不读取生产环境的运行时组装配置。"""
 
     classifier_model = config.classifier_model or config.model
     if config.provider_factory is not None:
@@ -598,7 +597,7 @@ def _resolve_providers(config: RunConfig) -> _ResolvedProviders:
 
 
 def _create_recording_routes(config: RunConfig) -> _RecordingRoutes:
-    """Create one main/classifier provider pair and observe every request once."""
+    """创建一对主模型与分类器服务，确保每个请求只观测一次。"""
 
     resolved = _resolve_providers(config)
     _configure_provider_timeout(resolved.main_provider, seconds=config.provider_timeout_seconds)
@@ -625,7 +624,7 @@ def _provider_metrics(routes: _RecordingRoutes) -> tuple[ProviderCallMetric, ...
 
 
 def _configure_provider_timeout(provider: ChatProvider, *, seconds: float) -> None:
-    """Apply a request timeout only to SDK clients created for this benchmark trial."""
+    """仅为当前基准试验创建的 SDK 客户端设置请求超时。"""
 
     client = getattr(provider, "_client", None)
     with_options = getattr(client, "with_options", None)
@@ -648,7 +647,7 @@ def _create_benchmark_session(*, store: JsonlSessionStore, data_root: Path, proj
 
 
 def _resume_benchmark_session(*, store: JsonlSessionStore, data_root: Path, project_root: Path) -> AgentSession:
-    """Recreate runtime-only tool and permission state for a copied task-A store."""
+    """为复制的任务 A 存储重建仅存在于运行时的工具与权限状态。"""
 
     access, permission_manager = _benchmark_access_and_permissions(data_root=data_root, project_root=project_root)
     session = AgentSession.resume(
@@ -747,7 +746,7 @@ def _aider_docker_command(
     verifier_log_dir: Path,
     image_tag: str,
 ) -> tuple[list[str], list[str]]:
-    """Build and run one original Aider verifier against a disposable project."""
+    """在一次性项目中构建并运行一个原始 Aider 验证器。"""
 
     environment_root = task.dockerfile.parent
     project_mount = f"type=bind,source={project_root.resolve()},target=/app"
@@ -779,7 +778,7 @@ def _run_aider_verifier(
     project_root: Path,
     image_tag: str,
 ) -> tuple[int | None, str, str]:
-    """Run a local Aider Docker verifier and delete the temporary image tag."""
+    """运行本地 Aider Docker 验证器，并删除临时镜像标签。"""
 
     verifier_log_dir = project_root.parent / "verifier-logs"
     verifier_log_dir.mkdir(parents=True, exist_ok=False)
@@ -861,7 +860,7 @@ def _write_sanitized_events(
     *,
     start_event_index: int = 0,
 ) -> None:
-    """Persist only fields needed to audit boundary and compaction decisions."""
+    """仅保存审计任务边界与压缩决策所必需的字段。"""
 
     records: list[dict[str, object]] = []
     for event in store.list_events(session_id)[start_event_index:]:
@@ -888,7 +887,7 @@ def _write_sanitized_events(
 
 
 def _remove_private_trial_directory(path: Path, *, trial_root: Path) -> None:
-    """Delete a known trial child without ever resolving a broad target."""
+    """删除已知的试验子目录，避免解析范围过大的目标路径。"""
 
     resolved_trial_root = trial_root.resolve()
     resolved_path = path.resolve()
@@ -932,7 +931,7 @@ def _require_full_boundary_events(
     results: Sequence[TrialResult],
     cases: Sequence[CaseDefinition],
 ) -> None:
-    """Fail only after preserving every raw trial result needed for diagnosis."""
+    """先保留诊断所需的全部原始试验结果，再报告失败。"""
 
     expected_boundaries = {
         case.benchmark_case.case_id: case.benchmark_case.expected_boundary

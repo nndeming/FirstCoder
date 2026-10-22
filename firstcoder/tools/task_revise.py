@@ -1,4 +1,4 @@
-"""Dedicated task-content revision tool."""
+"""专门修订任务内容的工具。"""
 
 from __future__ import annotations
 

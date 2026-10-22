@@ -1,1 +1,1 @@
-"""Harbor integration for the Terminal-Bench regression set."""
+"""Terminal-Bench 回归集的 Harbor 集成。"""

@@ -921,7 +921,7 @@ before_tokens = request.estimate_tokens(view)
 
 ```python
 before_level_tokens = request.estimate_tokens(view)
-# apply level
+# 应用当前层级的压缩
 after_level_tokens = request.estimate_tokens(view)
 ```
 

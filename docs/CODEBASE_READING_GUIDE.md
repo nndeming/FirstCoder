@@ -296,19 +296,19 @@ generated benchmark trees may ship their own `tests/` directories.
 ## 8. Useful Entry Commands
 
 ```sh
-# orchestration & assembly
+# 编排与组装
 rg -n "class AgentLoop|def create_firstcoder_app|class SessionBootstrap" firstcoder tests
 
-# request / tool / permission seams
+# 请求、工具与权限的衔接点
 rg -n "ChatRequest\(|tool_registry\.execute|preflight\(" firstcoder tests
 
-# pause / resume human input
+# 用户输入的暂停与恢复
 rg -n "UserInputRequest|resume_with_user_input|permission_confirmation" firstcoder tests
 
-# compact triggers
+# 压缩触发条件
 rg -n "_auto_compact|compact_if_needed|ContextWindowTrigger" firstcoder tests
 
-# full unit suite (from repo root)
+# 完整单元测试（从仓库根目录执行）
 .venv/bin/python -m pytest tests -q
 ```
 

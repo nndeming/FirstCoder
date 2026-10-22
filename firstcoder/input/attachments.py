@@ -1,4 +1,4 @@
-"""Attachment discovery, staging, and provider-facing preparation."""
+"""附件发现、暂存及模型请求前的准备工作。"""
 
 from __future__ import annotations
 
@@ -15,9 +15,9 @@ from firstcoder.input.clipboard import read_clipboard_image_bytes
 
 AttachmentKind = Literal["image", "file"]
 
-# Keep images within typical provider payload budgets.
+# 将图片大小控制在常见模型服务的请求预算内。
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
-# Text-like files larger than this are attached as path references only.
+# 超过此大小的文本类文件只作为路径引用附加。
 MAX_INLINE_TEXT_BYTES = 200 * 1024
 MAX_ATTACHMENTS_PER_MESSAGE = 16
 
@@ -47,19 +47,19 @@ _TEXT_MEDIA_TYPES = {
 
 @dataclass(slots=True)
 class UserAttachment:
-    """An attachment staged in the composer before send."""
+    """发送前暂存在输入框中的附件。"""
 
     kind: AttachmentKind
     path: Path
     filename: str
     media_type: str
     size_bytes: int
-    source: str = "path"  # path | clipboard | paste
+    source: str = "path"  # 附件来源：path（路径）、clipboard（剪贴板）或 paste（粘贴）。
 
 
 @dataclass(slots=True)
 class PreparedAttachment:
-    """Attachment copied into the session attachment store and ready for persistence."""
+    """已复制到会话附件存储、可持久化记录的附件。"""
 
     kind: AttachmentKind
     filename: str
@@ -213,14 +213,14 @@ def resolve_explicit_image_references(text: str, *, workspace_root: str | Path) 
 
 
 def parse_path_candidates(text: str) -> list[str]:
-    """Extract likely absolute/relative file paths from paste text."""
+    """从粘贴文本中提取可能的绝对或相对文件路径。"""
 
     if not text or not text.strip():
         return []
     candidates: list[str] = []
     for match in _FILE_URI_RE.findall(text):
         candidates.append(match)
-    # Prefer whole-line paths (common when Finder pastes one path per line).
+    # 优先按整行识别路径，兼容 Finder 粘贴时每行一个路径的常见格式。
     for line in text.splitlines():
         stripped = line.strip().strip('"').strip("'")
         if not stripped:
@@ -228,7 +228,7 @@ def parse_path_candidates(text: str) -> list[str]:
         if stripped.startswith("file://") or stripped.startswith(("/", "~", "./", "../")) or re.match(r"^[A-Za-z]:[\\/]", stripped):
             candidates.append(stripped)
             continue
-        # Single-token relative path without spaces.
+        # 不含空格、只有一个词元的相对路径。
         if " " not in stripped and ("/" in stripped or "\\" in stripped) and Path(stripped).suffix:
             candidates.append(stripped)
     for match in _PATH_CANDIDATE_RE.findall(text):
@@ -250,7 +250,7 @@ def _path_from_candidate(candidate: str) -> Path | None:
     if not text:
         return None
     if text.startswith("file://"):
-        # Handle file:///Users/... and file://localhost/Users/...
+        # 处理 file:///Users/... 和 file://localhost/Users/... 格式的路径。
         without_scheme = text[7:]
         if without_scheme.startswith("localhost"):
             without_scheme = without_scheme[len("localhost") :]
@@ -273,7 +273,7 @@ def resolve_paste_attachments(
     *,
     include_clipboard_image: bool = True,
 ) -> list[UserAttachment]:
-    """Resolve attachments from paste text and/or the OS clipboard image."""
+    """从粘贴文本或系统剪贴板图片中解析附件。"""
 
     attachments: list[UserAttachment] = []
     seen_paths: set[Path] = set()
@@ -290,8 +290,8 @@ def resolve_paste_attachments(
             attachments.append(attachment)
             seen_paths.add(path)
 
-    # If the paste is only path(s), we still may also have an image on the clipboard.
-    # Prefer path attachments when both exist to avoid duplicate noise.
+    # 即使粘贴内容只有路径，剪贴板中也可能同时存在图片。
+    # 两者都存在时优先使用路径附件，避免重复。
     if include_clipboard_image and not attachments:
         image_bytes = read_clipboard_image_bytes()
         if image_bytes:
@@ -324,10 +324,11 @@ def prepare_attachments_for_session(
     store_root: Path,
     session_id: str,
 ) -> list[PreparedAttachment]:
-    """Copy attachments under the session attachment directory.\n\n
-    把用户传入的文件/图片从临时位置复制进会话自己的存储目录\n\n
+    """将附件复制到会话的附件目录。
 
-    感觉需要加一个附件清理机制(需要先调研一下)
+    把用户传入的文件或图片从临时位置复制到会话自己的存储目录。
+
+    后续可调研附件清理机制。
     """
 
     if not attachments:

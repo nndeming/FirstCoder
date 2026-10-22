@@ -60,7 +60,7 @@ def make_permission_denied_result(
 
 
 def make_prewrite_review_stale_result(*, tool_name: str, request: PermissionRequest) -> ToolResult:
-    """Block an approved mutation when the reviewed filesystem snapshot changed."""
+    """受审查的文件系统快照变化时，阻止已获授权的修改。"""
 
     return make_error_result(
         tool_name,
@@ -77,7 +77,7 @@ def make_prewrite_review_failed_result(
     request: PermissionRequest,
     error: str,
 ) -> ToolResult:
-    """Reject a direct mutation whose trusted preview cannot be produced."""
+    """无法生成可信预览时，拒绝直接修改文件。"""
 
     return make_error_result(
         tool_name,

@@ -45,7 +45,7 @@ from firstcoder.tools.background import (
 from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
 
 # ---------------------------------------------------------------------------
-# helpers
+# 辅助函数
 # ---------------------------------------------------------------------------
 
 
@@ -115,7 +115,7 @@ def _assistant_with_tool_call(tool_call: ToolCall) -> ChatResponse:
 
 
 # ---------------------------------------------------------------------------
-# control-plane helpers
+# 内部控制辅助函数
 # ---------------------------------------------------------------------------
 
 
@@ -167,7 +167,7 @@ def test_with_background_controls_adds_optional_schema_only() -> None:
 
 
 # ---------------------------------------------------------------------------
-# BackgroundJobManager
+# BackgroundJobManager 后台任务管理器
 # ---------------------------------------------------------------------------
 
 
@@ -264,7 +264,7 @@ def test_manager_cancel_before_start_marks_cancelled() -> None:
 
 
 # ---------------------------------------------------------------------------
-# ToolExecutor dispatch via AgentLoop
+# 经由 AgentLoop 测试 ToolExecutor 的派发流程
 # ---------------------------------------------------------------------------
 
 
@@ -814,7 +814,7 @@ def test_end_to_end_model_receives_task_notification(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# control tools
+# 控制工具
 # ---------------------------------------------------------------------------
 
 

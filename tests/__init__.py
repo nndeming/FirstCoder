@@ -1,1 +1,1 @@
-"""Tests for FirstCoder."""
+"""FirstCoder 测试。"""

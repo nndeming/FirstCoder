@@ -1,4 +1,4 @@
-"""Opt-in Harbor job plugin for Aider-style verifier-feedback trials."""
+"""按需启用的 Harbor 任务插件，用于执行 Aider 风格的验证器反馈试验。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from benchmark.harbor.aider_polyglot.aider_feedback_trial import create_aider_fe
 
 
 class AiderFeedbackPlugin(BaseJobPlugin):
-    """Use :class:`AiderFeedbackTrial` only for the lifetime of one job."""
+    """仅在单个任务的生命周期内使用 :class:`AiderFeedbackTrial`。"""
 
     def __init__(self) -> None:
         self._original_create: Any | None = None

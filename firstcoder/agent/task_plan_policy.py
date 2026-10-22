@@ -1,4 +1,4 @@
-"""Unified creation and final-reconciliation prompts for task plans."""
+"""统一管理任务计划创建与最终状态核对所用的提示。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ _TERMINAL_STATUSES = frozenset({"completed", "cancelled"})
 
 
 def render_current_task_plan_snapshot(plan: TaskPlan) -> str:
-    """Render the latest plan as ephemeral provider context."""
+    """将最新计划渲染为临时的模型请求上下文。"""
 
     projection = project_plan(plan)
     lines = [
@@ -41,7 +41,7 @@ def _format_task_ids(value: object) -> str:
 
 
 class TaskPlanPolicy:
-    """Read the persisted task plan and return optional loop instructions."""
+    """读取持久化的任务计划，并按需返回循环执行指令。"""
 
     def __init__(self, session: AgentSession) -> None:
         self.session = session

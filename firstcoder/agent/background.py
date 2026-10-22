@@ -293,11 +293,10 @@ class BackgroundJobManager:
     # -- 查询/收集 --------------------------------------------------------
 
     def collect_completed(self, *, session_id: str | None = None) -> list[BackgroundNotification]:
-        """Finalize and return completed jobs from a serialized consumer point.
+        """在串行消费环节完成收尾，并返回已完成的任务。
 
-        Worker threads only determine the tool's final status.  A linked TaskPlan
-        completion callback runs here, immediately before the caller persists the
-        notification, so it never races normal session event writes.
+        工作线程只确定工具的最终状态。关联的 TaskPlan 完成回调在此执行，
+        随后调用方立即持久化通知，从而避免与正常的会话事件写入发生竞争。
         """
 
         with self._lock:

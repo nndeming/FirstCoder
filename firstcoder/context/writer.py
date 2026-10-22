@@ -58,10 +58,9 @@ class SessionEventWriter:
         self.append_event("session_created", payload)
 
     def append_session_metadata_updated(self, **metadata: Any) -> None:
-        """追加用户可见 session metadata patch。
+        """追加用户可见的会话元数据补丁。
 
-        这个事件只影响 session catalog/share 等用户入口，不生成普通消息，也不进入
-        provider context。
+        此事件仅影响会话目录、分享等用户入口，不生成普通消息，也不进入模型上下文。
         """
 
         self.append_event("session_metadata_updated", metadata_without_reserved_keys(metadata))

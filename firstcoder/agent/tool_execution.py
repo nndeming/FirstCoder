@@ -1,7 +1,7 @@
-"""Tool execution helpers for AgentLoop.
+"""AgentLoop 使用的工具执行辅助逻辑。
 
-Owns parallel-batch policy, interactive tool sequencing, permission pending
-storage and resume, and tool-event emission so AgentLoop can coordinate turns.
+负责并行批次策略、交互工具排序、待确认权限的存储与恢复，以及工具事件发送，
+让 AgentLoop 专注于协调对话轮次。
 """
 
 from __future__ import annotations
@@ -71,10 +71,9 @@ BYPASS_PARALLEL_TOOL_NAMES = PARALLEL_READONLY_TOOL_NAMES | frozenset(
 
 @dataclass(frozen=True, slots=True)
 class ToolExecutionEvent:
-    """Runtime-visible tool activity event.
+    """运行时可见的工具活动事件。
 
-    These events are intentionally separate from provider stream events: provider
-    streams describe model output, while this describes local tool execution.
+    此类事件与模型服务的流式事件分开：后者描述模型输出，前者描述本地工具执行。
     """
 
     kind: Literal[
@@ -255,7 +254,7 @@ class ToolExecutor:
         return state
 
     async def execute_interactive_async(self, tool_calls: list[ToolCall]) -> ToolExecutionState:
-        """Run the shared synchronous state machine without blocking the stream loop."""
+        """运行共享的同步状态机，同时避免阻塞流式处理循环。"""
 
         return await anyio.to_thread.run_sync(self.execute_interactive, tool_calls)
 
@@ -313,12 +312,10 @@ class ToolExecutor:
         label: str | None,
         task_id: str | None,
     ) -> ToolResult:
-        """Enqueue a permission-cleared tool call as a background job.
+        """将已通过权限检查的工具调用加入后台任务队列。
 
-        Returns the immediate placeholder result that closes the original
-        ``tool_call_id``.  On any rejection (disabled runtime, ineligible tool,
-        or capacity) it returns a normal error result so the model can react and
-        the provider history stays valid.
+        立即返回占位结果，闭合原始 ``tool_call_id``。若后台功能未启用、工具不支持
+        后台执行或容量已满，则返回普通错误结果，便于模型处理并保持调用历史合法。
         """
 
         if self._background_manager is None:
@@ -414,7 +411,7 @@ class ToolExecutor:
         return plan.revision
 
     def _mark_background_task_completed(self, task_id: str, *, observed_revision: int | None) -> str:
-        """Advance the still-active task without overwriting newer agent decisions."""
+        """推进仍处于活动状态的任务，避免覆盖代理作出的更新决策。"""
 
         service = self._task_plan_service()
         for _ in range(3):

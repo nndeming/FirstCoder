@@ -1,1 +1,1 @@
-"""FirstCoder package."""
+"""FirstCoder 包。"""

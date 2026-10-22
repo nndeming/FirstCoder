@@ -1,8 +1,7 @@
-"""Agent-facing tool descriptions.
+"""展示给代理的工具说明。
 
-Tool docstrings stay close to implementation. These descriptions are the compact
-instructions shown to the model, so they explain when to use each tool and the
-important boundary conditions.
+工具文档字符串靠近实现；这里的精简说明用于发送给模型，
+解释各工具的使用时机与重要边界条件。
 """
 
 from __future__ import annotations
@@ -62,7 +61,7 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
 
 
 def apply_agent_tool_description(tool: Tool) -> Tool:
-    """Replace a tool's model-visible description when a curated one exists."""
+    """存在整理后的说明时，替换工具向模型展示的描述。"""
 
     description = TOOL_DESCRIPTIONS.get(tool.name)
     if description:

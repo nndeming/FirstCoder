@@ -1,7 +1,6 @@
-"""只读 session share 导出。
+"""只读的会话分享导出。
 
-第一版 share 只导出本地 Markdown transcript，不生成可导入、可继续运行的
-session snapshot。
+首版仅导出本地 Markdown 对话记录，不生成可导入并继续运行的会话快照。
 """
 
 from __future__ import annotations

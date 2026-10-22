@@ -1,4 +1,4 @@
-"""Load one registered skill as an ordinary session tool result."""
+"""将一个已注册技能加载为普通的会话工具结果。"""
 
 from __future__ import annotations
 

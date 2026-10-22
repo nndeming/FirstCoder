@@ -46,10 +46,10 @@ from firstcoder.utils.json_utils import loads_json_object
 
 
 class AnthropicProvider(ChatProvider):
-    """Anthropic Messages API provider。
+    """Anthropic Messages API 适配器。
 
-    与 OpenAI-compatible 主线共享同一套 `ChatRequest` / `ChatResponse` /
-    `ChatStreamEvent` 契约，方便 agent loop 与 TUI 无分支切换。
+    与兼容 OpenAI 的主实现共享 `ChatRequest`、`ChatResponse` 与
+    `ChatStreamEvent` 契约，使代理循环与 TUI 无需分支即可切换。
     """
 
     def __init__(

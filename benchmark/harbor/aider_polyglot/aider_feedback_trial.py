@@ -1,9 +1,8 @@
-"""Aider-style test-feedback retry for single-step Harbor coding tasks.
+"""为单步 Harbor 编码任务提供 Aider 风格的测试反馈重试。
 
-This runner is deliberately benchmark-local.  It gives an agent one repair
-turn only after the task's real shared verifier produced ``reward=0``.  It does
-not expose verifier files during the initial agent turn and never retries
-infrastructure failures that did not produce a reward.
+执行器仅用于基准测试。只有任务真实的共享验证器给出 ``reward=0`` 后，
+才允许代理进行一次修复。首轮不暴露验证器文件，
+也不重试未产生奖励值的基础设施故障。
 """
 
 from __future__ import annotations
@@ -21,25 +20,24 @@ _MAX_FEEDBACK_CHARS = 60_000
 
 
 def should_request_feedback_round(rewards: dict[str, float | int] | None) -> bool:
-    """Return true only for a verifier that explicitly reported reward zero."""
+    """仅当验证器明确报告奖励为零时返回真值。"""
 
     return rewards is not None and rewards.get("reward") == 0
 
 
 def should_request_feedback_after_missing_reward(test_output: str) -> bool:
-    """Recognize the C++ verifier's normal compile-failure path.
+    """识别 C++ 验证器正常的编译失败流程。
 
-    The local C++ verifier exits before writing ``reward.txt`` when CMake
-    cannot compile a submission.  Its complete compiler diagnostics are still
-    valid Aider-style feedback.  Installation, Docker and timeout failures do
-    not include this marker and remain trial errors.
+    当 CMake 无法编译提交内容时，本地 C++ 验证器会在写入 ``reward.txt`` 前退出。
+    完整编译诊断仍可作为 Aider 风格的有效反馈。安装、Docker 与超时故障
+    不含该标记，仍视为试验错误。
     """
 
     return "CMake build failed" in test_output and "error:" in test_output.lower()
 
 
 def build_aider_feedback(test_output: str) -> str:
-    """Format the repair turn without implying the agent may change tests."""
+    """格式化修复轮次消息，避免暗示代理可以修改测试。"""
 
     output = test_output[-_MAX_FEEDBACK_CHARS:]
     return (
@@ -52,13 +50,13 @@ def build_aider_feedback(test_output: str) -> str:
 
 
 class AiderFeedbackTrial(SingleStepTrial):
-    """Run one extra same-session repair turn after a failed shared verifier."""
+    """共享验证器失败后，在同一会话中额外执行一轮修复。"""
 
     @override
     async def _run(self) -> None:
-        # A separate verifier tears down the agent environment before testing,
-        # so it cannot support an in-place repair turn.  Preserve Harbor's
-        # standard behavior for such tasks rather than silently changing it.
+        # 独立验证器会在测试前销毁代理环境，
+        # 因此无法原地执行修复轮次。此类任务保留 Harbor 的
+        # 标准行为，避免静默改变执行方式。
         if resolve_task_verifier_mode(self.task.config) != VerifierEnvironmentMode.SHARED:
             await super()._run()
             return
@@ -88,7 +86,7 @@ class AiderFeedbackTrial(SingleStepTrial):
         await self._stop_agent_environment()
 
     async def _run_agent_with_instruction(self, instruction: str) -> None:
-        """Reuse the task environment/session for the feedback message."""
+        """复用任务环境与会话来处理反馈消息。"""
 
         try:
             await self._run_agent_phase(
@@ -114,7 +112,7 @@ async def create_aider_feedback_trial(
     trial_class: Any,
     config: Any,
 ) -> AiderFeedbackTrial | None:
-    """Create the feedback runner for a single-step task, otherwise return None."""
+    """为单步任务创建反馈执行器，其他情况返回 None。"""
 
     task, download_result = await trial_class._load_task(config)
     if task.has_steps:

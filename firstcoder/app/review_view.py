@@ -66,7 +66,7 @@ def render_prewrite_review(
 
 
 def review_command_from_text(text: str, payload: dict[str, object]) -> tuple[str, str | None] | None:
-    """Parse local UI-only expansion commands for the current review card."""
+    """解析当前审查卡片中仅影响本地界面的展开命令。"""
 
     normalized = text.strip()
     if not normalized.lower().startswith("review"):

@@ -1,4 +1,4 @@
-"""Local discovery for MCP tools that are not exposed in the initial schema set."""
+"""在本地查找未包含在初始工具定义集中的 MCP 工具。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ _TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
 
 @dataclass(frozen=True, slots=True)
 class McpSearchEntry:
-    """A provider-visible MCP definition eligible for local search."""
+    """可参与本地搜索、向模型提供的 MCP 工具定义。"""
 
     server: str
     tool: str
@@ -27,7 +27,7 @@ def search_mcp_tools(
     entries: tuple[McpSearchEntry, ...],
     query: str,
 ) -> tuple[McpSearchEntry, ...]:
-    """Return the highest-scoring local MCP matches in deterministic order."""
+    """按确定顺序返回本地 MCP 搜索中得分最高的匹配项。"""
 
     normalized_query = _normalize(query)
     query_tokens = set(_tokens(query))
@@ -41,7 +41,7 @@ def search_mcp_tools(
 
 
 def create_mcp_tool_search(entries: tuple[McpSearchEntry, ...]) -> Tool:
-    """Create a read-only tool that searches one MCP catalog snapshot."""
+    """创建只读工具，用于搜索一份 MCP 目录快照。"""
 
     def execute(*, query: str) -> ToolResult:
         if not isinstance(query, str) or not query.strip():

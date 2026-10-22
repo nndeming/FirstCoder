@@ -76,7 +76,7 @@ def _is_private_or_local_url(parsed: parse.ParseResult) -> bool:
 
 
 class _SafeRedirectHandler(request.HTTPRedirectHandler):
-    """Reject redirects to private, local, or newly-resolved private targets."""
+    """拒绝重定向到私有、本地或重新解析后属于私有网络的目标。"""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         parsed = parse.urlparse(newurl)
@@ -96,7 +96,7 @@ class _SafeRedirectHandler(request.HTTPRedirectHandler):
 
 
 def _resolves_to_private_ip(hostname: str) -> bool:
-    """Resolve hostname and check whether any result is a private/local address."""
+    """解析主机名，并检查是否有结果属于私有或本地地址。"""
 
     hostname = hostname.rstrip(".").lower()
     if not hostname:

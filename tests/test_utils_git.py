@@ -1,4 +1,4 @@
-"""utils/git tests."""
+"""utils/git 模块测试。"""
 
 from __future__ import annotations
 

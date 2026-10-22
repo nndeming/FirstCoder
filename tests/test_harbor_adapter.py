@@ -272,7 +272,7 @@ def test_harbor_install_reuses_a_shared_download_cache() -> None:
 
     assert "CACHE_DIR=/opt/firstcoder-cache" in command
     assert '"$UV_BIN" pip install --python "$AGENT_ROOT/.venv/bin/python" --cache-dir "$CACHE_DIR"' in command
-    # The cache stores downloaded wheels only; the venv is still rebuilt per trial.
+    # 缓存仅保存下载的安装包，每次试验仍需重新构建虚拟环境。
     assert "--no-cache" not in command
     assert command.count("--clear") == 2
 
@@ -344,12 +344,12 @@ def test_harbor_python_bootstrap_fails_clearly_without_supported_package_manager
 def test_harbor_python_bootstrap_retries_flaky_package_and_network_steps(tmp_path: Path) -> None:
     command = FirstCoderHarborAgent(logs_dir=tmp_path)._python_setup_command()
 
-    # A retry helper with bounded backoff wraps every step that hits a mirror.
+    # 每个访问镜像源的步骤都由带有限退避的重试函数包装。
     assert "retry() {" in command
     assert 'until "$@"; do' in command
     assert 'if [ "$attempt" -ge 3 ]; then' in command
     assert 'sleep "$((attempt * 5))"' in command
-    # System package installs and network fetches all go through retry.
+    # 系统包安装与网络下载均通过重试函数执行。
     assert "retry sh -c 'apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates'" in command
     assert "retry sh -c 'apt-get update && apt-get install -y --no-install-recommends python3-venv'" in command
     assert "retry apk add --no-cache python3 py3-pip" in command

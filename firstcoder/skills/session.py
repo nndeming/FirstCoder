@@ -1,4 +1,4 @@
-"""Session event helpers for skill audit records."""
+"""记录技能审计事件的会话辅助功能。"""
 
 from __future__ import annotations
 

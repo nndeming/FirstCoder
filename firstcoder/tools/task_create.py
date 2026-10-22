@@ -1,4 +1,4 @@
-"""Incremental task-plan creation tool."""
+"""增量创建任务计划的工具。"""
 
 from __future__ import annotations
 

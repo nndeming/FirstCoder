@@ -1,4 +1,4 @@
-"""Rendering for pre-write diff review cards."""
+"""写入前差异审查卡片的渲染。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Trusted pre-write previews for direct local file mutation tools."""
+"""直接修改本地文件前生成的可信预览。"""
 
 from __future__ import annotations
 

@@ -40,7 +40,7 @@ def _read_calls(*names: str) -> list[ToolCall]:
 
 
 def test_parallel_batch_skips_double_permission_check(tmp_path) -> None:
-    """Each parallel tool call should only be permission-checked once (in preflight)."""
+    """每次并行工具调用只应在预检阶段进行一次权限检查。"""
 
     executor, session = _make_tool_executor(tmp_path)
     calls = _read_calls("grep", "tree", "glob")
@@ -57,7 +57,7 @@ def test_parallel_batch_skips_double_permission_check(tmp_path) -> None:
 
 
 def test_single_tool_parallel_batch_skips_thread_pool(tmp_path) -> None:
-    """A single parallel-eligible tool in a batch should use execute_single, not ThreadPoolExecutor."""
+    """批次中只有一个可并行工具时，应使用 execute_single，而非 ThreadPoolExecutor。"""
 
     executor, _ = _make_tool_executor(tmp_path)
     calls = _read_calls("grep")
@@ -72,7 +72,7 @@ def test_single_tool_parallel_batch_skips_thread_pool(tmp_path) -> None:
 
 
 def test_multi_tool_parallel_batch_uses_thread_pool(tmp_path) -> None:
-    """Multiple parallel-eligible tools should still use ThreadPoolExecutor."""
+    """多个可并行工具仍应使用 ThreadPoolExecutor。"""
 
     executor, _ = _make_tool_executor(tmp_path)
     calls = _read_calls("grep", "glob", "tree")
@@ -92,7 +92,7 @@ def test_multi_tool_parallel_batch_uses_thread_pool(tmp_path) -> None:
 
 
 def test_interleaved_batch_runs_sequential_between_parallel(tmp_path) -> None:
-    """[grep, write, grep] should run grep in parallel-safe mode, write sequentially, grep again."""
+    """[grep, write, grep] 应依次以并行安全模式运行 grep、串行写入、再次运行 grep。"""
 
     executor, _ = _make_tool_executor(tmp_path)
     calls = [

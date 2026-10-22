@@ -1,4 +1,4 @@
-"""Canonical task-plan domain models and stable JSON serialization."""
+"""任务计划的统一领域模型与稳定 JSON 序列化。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ _TASK_PLAN_MODES: frozenset[str] = frozenset({"linear", "dag"})
 
 
 class TaskPlanError(ValueError):
-    """Raised when a serialized task plan is structurally invalid."""
+    """序列化后的任务计划结构无效时抛出的异常。"""
 
 
 @dataclass(frozen=True, slots=True)
