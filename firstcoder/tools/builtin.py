@@ -42,9 +42,10 @@ def create_builtin_registry(
     include_web_search: bool = True,
     process_manager: ProcessManager | None = None,
 ) -> ToolRegistry:
-    """创建第一阶段默认可用工具。
+    """创建不依赖会话状态的内置工具集合。
 
-    默认只注册只读工具。写入类工具必须显式启用，方便后续接确认机制。
+    默认提供查看、搜索和诊断工具，并按开关加入 think 与 ask_user。
+    写入、命令执行和网络工具需显式启用；权限包装与会话专属工具由 session_registry 装配。
     """
 
     tools = [

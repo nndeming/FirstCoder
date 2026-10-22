@@ -1,7 +1,9 @@
+from copy import deepcopy
+
 import pytest
 
 from firstcoder.context.checkpoint import Checkpoint
-from firstcoder.context.context_builder import ContextBuilder
+from firstcoder.context.context_builder import ContextBuilder, InvalidCheckpointBoundaryError
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.tool_sequence import InvalidToolCallSequenceError, validate_tool_call_sequence
 from firstcoder.context.system_prompt import SystemPromptBuilder, SystemPromptInputs
@@ -448,3 +450,65 @@ def test_projected_tool_result_part_ids_only_include_effective_checkpoint_tail()
     part_ids = ContextBuilder().projected_tool_result_part_ids(view)
 
     assert part_ids == (tail_result.parts[0].id,)
+
+
+@pytest.mark.parametrize("checkpointed", [False, True], ids=["full-history", "checkpoint-tail"])
+@pytest.mark.parametrize("result_kind", ["tool_result", "archive_placeholder", "duplicate_call"])
+def test_projection_and_consumption_use_the_same_tail_without_mutating_history(checkpointed, result_kind) -> None:
+    old_call, old_result = _tool_transaction("old")
+    tail_call, tail_result = _tool_transaction("tail")
+    tail = [tail_call, tail_result]
+    if result_kind == "archive_placeholder":
+        tail_result.parts[0].kind = "archive_placeholder"
+    elif result_kind == "duplicate_call":
+        duplicate = deepcopy(tail_call)
+        duplicate.id = "msg_duplicate"
+        duplicate.parts[0].id = "part_duplicate"
+        duplicate.parts[0].message_id = duplicate.id
+        tail.insert(1, duplicate)
+    checkpoints = [
+        Checkpoint(
+            id="ckpt_tail", session_id="sess_test", summary="earlier work",
+            tail_start_message_id=tail_call.id, covered_until_message_id=old_result.id,
+            source_fingerprint="fp",
+        )
+    ] if checkpointed else []
+    view = SessionView(session_id="sess_test", messages=[old_call, old_result, *tail], checkpoints=checkpoints)
+    original = deepcopy(view)
+    builder = ContextBuilder()
+
+    messages = builder.build_provider_messages(view)
+    consumed_ids = builder.projected_tool_result_part_ids(view)
+
+    assert [message.tool_call_id for message in messages if message.role == "tool"] == (
+        ["call_tail"] if checkpointed else ["call_old", "call_tail"]
+    )
+    expected_ids = [] if checkpointed else [old_result.parts[0].id]
+    if result_kind != "archive_placeholder":
+        expected_ids.append(tail_result.parts[0].id)
+    assert consumed_ids == tuple(expected_ids)
+    assert view == original
+
+
+@pytest.mark.parametrize("checkpointed", [False, True], ids=["full-history", "checkpoint-tail"])
+@pytest.mark.parametrize("missing", ["call", "result"])
+def test_projection_and_consumption_reject_the_same_unpaired_tool_history(checkpointed, missing) -> None:
+    call, result = _tool_transaction("unpaired")
+    tail = result if missing == "call" else call
+    checkpoints = [
+        Checkpoint(
+            id="ckpt_invalid", session_id="sess_test", summary="earlier work",
+            tail_start_message_id=tail.id, covered_until_message_id="old_message",
+            source_fingerprint="fp",
+        )
+    ] if checkpointed else []
+    view = SessionView(session_id="sess_test", messages=[tail], checkpoints=checkpoints)
+    builder = ContextBuilder()
+    errors = []
+
+    for operation in (builder.build_provider_messages, builder.projected_tool_result_part_ids):
+        with pytest.raises((InvalidToolCallSequenceError, InvalidCheckpointBoundaryError)) as error:
+            operation(view)
+        errors.append((type(error.value), str(error.value)))
+
+    assert errors[0] == errors[1]

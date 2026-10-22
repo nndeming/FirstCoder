@@ -135,14 +135,15 @@ class CompactionPipeline:
             consumed_tool_result_part_ids=request.consumed_tool_result_part_ids,
         )
 
-        # 先校验一下是否有必要压缩. 五个条件全部不满足才真的开工: 已达标, 未强制旧任务压缩,
-        # 没有 required 级别, 没有垃圾级候选, 也没有单条超大结果 -- 任一成立都要继续往下走
+        # 整体达标不代表一定能跳过：调用方指定的层级、旧任务清理和单条结果压力仍要处理。
+        must_clean_l3_results = "l3" in request.enabled_levels and has_l3_mandatory_candidates
+        must_reduce_large_results = bool({"l2", "l3"}.intersection(request.enabled_levels)) and has_l3_per_result_pressure
         if (
             before_tokens <= request.target_tokens
             and not request.force_old_task_compaction
             and not required_levels
-            and not ("l3" in request.enabled_levels and has_l3_mandatory_candidates)
-            and not ({"l2", "l3"}.intersection(request.enabled_levels) and has_l3_per_result_pressure)
+            and not must_clean_l3_results
+            and not must_reduce_large_results
         ):
             # dedup 是 de-duplicate(去重)的缩写，deduped 即"已被识别为重复的"
             deduped = input_fingerprint in self._seen_noop_fingerprints
@@ -277,8 +278,6 @@ class CompactionPipeline:
             return self._apply_l3(
                 view,
                 request=request,
-                active_task_hash=request.active_task_hash,
-                current_turn=request.current_turn,
                 lifecycle_records=lifecycle_records,
             )
         return []
@@ -295,7 +294,8 @@ class CompactionPipeline:
 
         三道保护: 最新一条 user 消息不动; 含 tool_call 的 assistant 消息不动
         (它是 provider 可见的工具信息, 不能单独修剪); 默认只动距当前够冷的
-        (≥cold_turn_distance 轮), 换任务(force)时全动. 修剪掉的文本不可恢复.
+        (≥cold_turn_distance 轮)，换任务(force)时跳过冷度要求。有效视图中清空文本，
+        原始内容仍可在 JSONL 事件日志中查看。
         """
 
         changed: list[dict[str, object]] = []
@@ -313,7 +313,7 @@ class CompactionPipeline:
                 continue
             for index, part in enumerate(message.parts):
                 if not is_old_task_part(part, active_task_hash=active_task_hash):
-                    # !(未被压缩 && kind == "text" && part带的hash和当前active_task_hash不一致)
+                    # 只处理未压缩、且明确属于其他任务的普通文本。
                     continue
                 if not force_old_task_compaction and not _is_cold_old_task_part(
                     # 不是强制压缩, part也没有过冷(不满足当前轮 - 创建轮 >= cold_turn_distance)
@@ -322,7 +322,7 @@ class CompactionPipeline:
                     cold_turn_distance=self.cold_turn_distance,
                 ):
                     continue
-                
+
                 # L1压缩
                 compacted = compact_old_task_part(part)
                 if _replace_l1_trimmed(message.parts, index, compacted):
@@ -393,8 +393,6 @@ class CompactionPipeline:
         view: SessionView,
         *,
         request: CompactionRequest,
-        active_task_hash: str | None,
-        current_turn: int,
         lifecycle_records: dict[tuple[str, str], ToolResultLifecycleRecord],
     ) -> list[dict[str, object]]:
         """L3 压缩: 把垃圾级或超大 DERIVED 的 tool_result 换成占位符, 原文进归档。
@@ -407,13 +405,11 @@ class CompactionPipeline:
 
         changed: list[dict[str, object]] = []
         archive = ToolResultArchive(self.root)
-        del active_task_hash
-        # 筛候选: 强制(垃圾级) + 可选(DERIVED 超单条阈值), 返回时已按优先级排好序
+        # 筛选并排序强制清理项和 DERIVED 可选项；下面再检查何时可以停止。
         candidates = _l3_candidates(
             _effective_tail_messages(view),
             lifecycle_records=lifecycle_records,
-            current_turn=current_turn,
-            target_tokens=request.target_tokens,
+            current_turn=request.current_turn,
             per_result_target=_per_result_target(
                 request.l2_result_target_tokens,
                 fallback=self.large_tool_result_tokens,
@@ -422,7 +418,11 @@ class CompactionPipeline:
         )
         for candidate in candidates:
             # 非强制且未超单条阈值的候选: 整体已达标就提前收工, 后面的不再处理
-            if not candidate.mandatory and not candidate.over_per_result_target and request.estimate_tokens(view) <= request.target_tokens:
+            if (
+                not candidate.mandatory
+                and not candidate.over_per_result_target
+                and request.estimate_tokens(view) <= request.target_tokens
+            ):
                 break
 
             part = candidate.message.parts[candidate.part_index]
@@ -430,7 +430,7 @@ class CompactionPipeline:
             if not _can_archive_l3_part(
                 part,
                 lifecycle=candidate.lifecycle,
-                current_turn=current_turn,
+                current_turn=request.current_turn,
                 consumed_tool_result_part_ids=request.consumed_tool_result_part_ids,
             ):
                 continue
@@ -524,7 +524,7 @@ def _is_cold_old_task_part(
     current_turn: int,
     cold_turn_distance: int,
 ) -> bool:
-    """判断 part 是否"冷透": 诞生至今(当前轮 - 创建轮)已超过 cold_turn_distance 轮无人触及"""
+    """按创建轮次判断冷度：当前轮减创建轮达到阈值即为冷内容。"""
 
     created_turn = part.metadata.get("created_turn")
     return isinstance(created_turn, int) and not isinstance(created_turn, bool) and current_turn - created_turn >= cold_turn_distance
@@ -655,7 +655,7 @@ def _has_l3_mandatory_candidates(
         for part in message.parts:
             lifecycle = lifecycle_records.get((message.id, part.id))
             # _is_l3_mandatory: 生命周期属于"垃圾级"(DUPLICATE || SUPERSEDED || STALE)
-            # _can_archive_l3_part: 当前可以处理它(存疑)
+            # _can_archive_l3_part: 已被模型消费，且当前状态和取回保护期允许归档。
             if _is_l3_mandatory(lifecycle) and _can_archive_l3_part(
                 part,
                 lifecycle=lifecycle,
@@ -716,18 +716,15 @@ def _l3_candidates(
     *,
     lifecycle_records: dict[tuple[str, str], ToolResultLifecycleRecord],
     current_turn: int,
-    target_tokens: int,
     per_result_target: int | None,
     consumed_tool_result_part_ids: frozenset[str],
 ) -> list[_L3Candidate]:
-    """Return deterministic tool-result-only L3 candidates.
+    """筛选并排序可归档的工具结果，不在这里决定何时停止压缩。
 
-    Mandatory lifecycle cleanup is selected regardless of the overall target.
-    Derived output is optional: it is selected when an individual result still
-    exceeds its L2 budget or when the current context remains above target.
+    重复、被覆盖和过期的结果属于强制清理候选；DERIVED 结果属于可选候选。
+    _apply_l3 再根据整体预算和单条结果大小，决定是否继续处理可选候选。
     """
 
-    del target_tokens  # Selection below-budget is decided during application.
     candidates: list[_L3Candidate] = []
     tail_index = 0
     for message in messages:

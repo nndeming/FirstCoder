@@ -1,8 +1,8 @@
 """L2 内容路由压缩框架。
 
 这一层只负责“识别内容类型 -> 分发到对应压缩器 -> 验证压缩收益 -> 统一写 metadata”。
-具体的 search、diff、build、json、code、html 算法会按第 14 步逐个补齐，避免把
-路由边界和具体压缩策略耦合在一起。
+search、diff、build、json、code、html 的具体算法各在同目录的对应模块中。
+路由器通过 compressors 字典选择算法，专用算法未注册时可回退到纯文本压缩器。
 """
 
 from __future__ import annotations

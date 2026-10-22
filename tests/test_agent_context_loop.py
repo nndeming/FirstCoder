@@ -3576,6 +3576,82 @@ def test_agent_loop_blocks_mutation_when_prewrite_review_cannot_be_built(tmp_pat
     assert "匹配内容出现 2 次" in tool_part.content
 
 
+@pytest.mark.parametrize("streaming", [False, True], ids=["complete", "stream"])
+@pytest.mark.parametrize("scenario", ["allow", "deny", "stale", "review_only", "unknown_review_answer"])
+def test_permission_resume_preserves_results_events_and_budget(tmp_path, streaming, scenario) -> None:
+    """两条请求路径都应只完成原调用一次，并为同批未执行调用补齐结果。"""
+
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_resume_parity",
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path)],
+    )
+    if scenario in {"review_only", "unknown_review_answer"}:
+        session.set_permission_mode(PermissionMode.AGGRESSIVE)
+    responses = [
+        ChatResponse(
+            provider="fake",
+            model="fake-model",
+            content="",
+            tool_calls=[
+                ToolCall(id="approved_write", name="write", arguments={"path": "result.txt", "content": "approved"}),
+                ToolCall(id="skipped_write", name="write", arguments={"path": "skipped.txt", "content": "must not run"}),
+            ],
+            finish_reason="tool_calls",
+        ),
+        ChatResponse(provider="fake", model="fake-model", content="done"),
+    ]
+    provider = StreamingProvider(responses) if streaming else FakeProvider(responses)
+    events = []
+    loop = AgentLoop(session=session, provider=provider, tool_event_handler=events.append)
+
+    paused = asyncio.run(loop.run_user_turn("write a file", streaming=streaming))
+    assert paused.status == AgentTurnStatus.WAITING_FOR_USER_INPUT
+    assert paused.pending_input is not None
+    assert not (tmp_path / "result.txt").exists()
+    assert len(provider.requests) == 1
+    assert session.pending_permission_execution is not None
+    assert session.pending_permission_execution.review_only == (scenario in {"review_only", "unknown_review_answer"})
+
+    if scenario == "stale":
+        (tmp_path / "result.txt").write_text("external change", encoding="utf-8")
+    answer = "deny" if scenario == "deny" else "unexpected" if scenario == "unknown_review_answer" else "allow_once"
+    events.clear()
+    completed = asyncio.run(loop.resume_with_user_input(paused.pending_input.id, answer, streaming=streaming))
+
+    assert completed.content == "done"
+    assert session.pending_permission_execution is None
+    assert session.current_turn == 1
+    assert loop.provider_call_count == 2
+    assert loop._tool_rounds_completed == 1
+    assert not (tmp_path / "skipped.txt").exists()
+    succeeded = scenario in {"allow", "review_only"}
+    assert [event.kind for event in events] == (["started", "finished", "skipped"] if succeeded else ["denied", "skipped"])
+    if succeeded:
+        assert (tmp_path / "result.txt").read_text(encoding="utf-8") == "approved"
+    elif scenario == "stale":
+        assert (tmp_path / "result.txt").read_text(encoding="utf-8") == "external change"
+    else:
+        assert not (tmp_path / "result.txt").exists()
+
+    view = session.rebuild_view()
+    assert [message.role for message in view.messages] == ["user", "assistant", "tool", "tool", "assistant"]
+    tool_parts = [part for message in view.messages if message.role == "tool" for part in message.parts]
+    assert [part.metadata["tool_call_id"] for part in tool_parts] == ["approved_write", "skipped_write"]
+    assert tool_parts[0].metadata["ok"] is succeeded
+    if not succeeded:
+        expected_type = "prewrite_review_stale" if scenario == "stale" else "permission_denied"
+        assert tool_parts[0].metadata["data"]["request_type"] == expected_type
+
+    # 重放同一个确认 id，不能再次执行工具或再次请求模型。
+    replay = asyncio.run(loop.resume_with_user_input(paused.pending_input.id, answer, streaming=streaming))
+    assert replay.finish_reason == "error"
+    assert len(provider.requests) == 2
+    assert len([message for message in session.rebuild_view().messages if message.role == "tool"]) == 2
+
+
 def test_agent_loop_permission_deny_appends_denied_result_and_continues(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path / ".firstcoder")
     session = AgentSession.from_project(

@@ -51,14 +51,17 @@
 | --- | --- |
 | `loop.py` | 轮次事务、压缩触发、停止/暂停编排 |
 | `loop_limits.py` | 预算与 stop-reason 枚举 |
-| `tool_execution.py` | 执行/记录 tool call |
+| `tool_execution.py` | 工具批次执行、权限暂停后的校验与执行、结果记录 |
 | `tool_flow.py` / `tool_settlement.py` | 批次流控与 settle |
 | `task_plan_policy.py` | 当前 TaskPlan 读取与一次性结束对账 |
 | `task_boundary_classifier.py` | 任务边界分类辅助 |
 | `ports.py` | loop 用的最小 `ContextManagerLike` |
 
-压缩调用点优先用 loop 上的具名 helper（`_auto_compact`、
-`_compact_for_prompt_too_long`、`_compact_after_task_hash_changed`），让意图可读。
+自动压缩在 `_prepare_main_provider_request` 中发生；超长请求恢复和任务切换
+分别通过 `_compact_for_prompt_too_long`、`_compact_after_task_hash_changed` 触发。
+
+权限恢复时，loop 校验请求、维护轮次预算并继续模型循环；`ToolExecutor.resume_permission`
+及其异步版本负责解析回答、重验预览、执行原调用、发送事件和补齐工具结果。
 
 tools/permissions/utils 共用的 DTO 在 `firstcoder.runtime`，不在 loop 包里。
 详见 [ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md)。

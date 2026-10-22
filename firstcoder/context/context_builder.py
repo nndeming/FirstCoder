@@ -18,13 +18,13 @@ class InvalidCheckpointBoundaryError(ValueError):
 class ContextBuilder:
     """只负责投影，不负责压缩、总结、落盘或任务边界判断。
 
-    `SessionView` 是 FirstCoder 自己的事实账本，不等于 provider 请求格式。ContextBuilder
+    `SessionView` 是事件重放后的有效视图，不等于 provider 请求格式。ContextBuilder
     的职责就是在每次调用模型前，把当前可见历史转换成 `ChatMessage` 列表：
 
     - system prefix 由 AgentSession 传入。
     - 如果有 checkpoint，先插入一条“旧历史摘要”。
-    - 再保留 checkpoint tail 之后的真实消息。
-    - 最后校验 tool_call/tool_result 序列，避免 provider 拒绝请求。
+    - 选出 checkpoint tail，合并特定的重复调用，并校验工具消息配对。
+    - 将合法的尾部消息逐条转换为 provider 格式。
     """
 
     def build_provider_messages(
@@ -49,10 +49,6 @@ class ContextBuilder:
             messages.append(ChatMessage(role="user", content=checkpoint_summary_content(active_checkpoint)))
 
         tail_messages = self._tail_messages(view, checkpoint=active_checkpoint)
-        tail_messages = _collapse_identical_adjacent_duplicate_tool_calls(tail_messages)
-        # provider 对 tool calling 序列很严格：assistant tool_call 后必须紧跟对应 tool result。
-        # 压缩/checkpoint 不能把这个配对切断。
-        validate_tool_call_sequence(tail_messages)
         if _has_trimmed_text(tail_messages):
             # One aggregate marker keeps the provider informed without adding a
             # synthetic message for each forgotten part or splitting a tool
@@ -73,10 +69,7 @@ class ContextBuilder:
         """Return tool results that are visible in the effective provider tail."""
 
         checkpoint = CheckpointIndex(view.checkpoints).latest()
-        tail = _collapse_identical_adjacent_duplicate_tool_calls(
-            self._tail_messages(view, checkpoint=checkpoint)
-        )
-        validate_tool_call_sequence(tail)
+        tail = self._tail_messages(view, checkpoint=checkpoint)
         return tuple(
             part.id
             for message in tail
@@ -91,19 +84,31 @@ class ContextBuilder:
         *,
         checkpoint: Checkpoint | None,
     ) -> list[AgentMessage]:
-        if checkpoint is None:
-            return view.messages
+        """统一准备待投影的尾部，供消息投影和已消费结果记账共同使用。
 
-        for index, message in enumerate(view.messages):
-            if message.id == checkpoint.tail_start_message_id:
-                tail = view.messages[index:]
-                # tail 不能从 tool message 开始，否则 provider 会看到一个没有前置 assistant
-                # tool_call 的孤立 tool_result。
-                _validate_tail_boundary(tail)
-                return tail
-        raise InvalidCheckpointBoundaryError(
-            f"checkpoint tail_start_message_id not found: {checkpoint.tail_start_message_id}",
-        )
+        先按 checkpoint 截取，再合并特定的相邻重复调用，最后校验工具消息配对。
+        只返回派生列表，不修改 view 中保存的消息。
+        """
+
+        if checkpoint is None:
+            tail = view.messages
+        else:
+            start_index = None
+            for index, message in enumerate(view.messages):
+                if message.id == checkpoint.tail_start_message_id:
+                    start_index = index
+                    break
+            if start_index is None:
+                raise InvalidCheckpointBoundaryError(
+                    f"checkpoint tail_start_message_id not found: {checkpoint.tail_start_message_id}",
+                )
+            tail = view.messages[start_index:]
+            # checkpoint 不能把一组调用切成只有结果、没有调用的孤立消息。
+            _validate_tail_boundary(tail)
+
+        tail = _collapse_identical_adjacent_duplicate_tool_calls(tail)
+        validate_tool_call_sequence(tail)
+        return tail
 
     def _project_message(
         self,

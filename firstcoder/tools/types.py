@@ -28,9 +28,10 @@ class ToolResult:
 
 
 class ToolExecutor(Protocol):
-    """工具执行函数的协议。
+    """单个工具函数的调用协议，对应 Tool.executor。
 
     每个工具最终都是一个接收关键字参数、返回 `ToolResult` 的函数。
+    它描述函数签名；批次调度、权限暂停和事件由 agent.tool_execution.ToolExecutor 负责。
     """
 
     def __call__(self, *args: Any, **kwargs: Any) -> ToolResult: ...
@@ -40,8 +41,8 @@ class ToolExecutor(Protocol):
 class ToolPermissionSpec:
     """工具的程序侧权限声明。
 
-    这个声明不进入模型可见 schema，只给权限 wrapper 用来构造
-    `PermissionRequest`。第一版先支持从工具参数中取 target/cwd。
+    这个声明不进入模型可见 schema，只给权限 wrapper 用来构造 `PermissionRequest`。
+    目标可由参数名、固定值或 target_builder 提取；cwd_arg 指定工作目录参数。
     """
 
     action: PermissionAction

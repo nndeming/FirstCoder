@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 import re
 
@@ -11,7 +12,7 @@ from firstcoder.agent.session import AgentSession
 from firstcoder.context.manager import ContextCompactResult, ContextWindowTrigger
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.providers.base import ChatProvider
-from firstcoder.providers.types import ChatRequest, ChatResponse
+from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent
 
 
 @dataclass
@@ -45,6 +46,9 @@ class ScriptedBoundaryProvider(ChatProvider):
         self.requests.append(request)
         return ChatResponse(provider=self.name, model=self.model, content="完成")
 
+    async def astream(self, request: ChatRequest):
+        yield ChatStreamEvent(kind="message_completed", response=self.complete(request))
+
 
 @dataclass
 class RecordingContextManager:
@@ -69,7 +73,7 @@ def _basis_message_id(request: ChatRequest) -> str:
     raise AssertionError("classifier request did not expose its basis message id")
 
 
-def _run_two_turn_boundary_case(tmp_path, arm: Arm, decisions: list[str]):
+def _run_two_turn_boundary_case(tmp_path, arm: Arm, decisions: list[str], *, streaming: bool = False):
     store = JsonlSessionStore(tmp_path / arm.value)
     session = AgentSession.create(store=store, session_id=f"session_{arm.value}", agents_md="")
     session.runtime_state.active_task_hash = "task_a"
@@ -82,12 +86,16 @@ def _run_two_turn_boundary_case(tmp_path, arm: Arm, decisions: list[str]):
         arm=arm,
     )
 
-    loop._run_user_turn_sync("任务 B：修复 parser")
-    loop._run_user_turn_sync("继续任务 B：运行测试")
+    for content in ("任务 B：修复 parser", "继续任务 B：运行测试"):
+        if streaming:
+            asyncio.run(loop.run_user_turn(content, streaming=True))
+        else:
+            loop._run_user_turn_sync(content)
 
     return store, session, provider, context_manager
 
 
+@pytest.mark.parametrize("streaming", [False, True], ids=["complete", "stream"])
 @pytest.mark.parametrize(
     ("arm", "expected_classifier_calls", "expected_task_hash_changed_calls"),
     [
@@ -101,11 +109,13 @@ def test_three_arms_keep_auto_but_isolate_task_boundary_compaction(
     arm: Arm,
     expected_classifier_calls: int,
     expected_task_hash_changed_calls: int,
+    streaming: bool,
 ) -> None:
     store, session, provider, context_manager = _run_two_turn_boundary_case(
         tmp_path,
         arm,
         decisions=["new", "same"],
+        streaming=streaming,
     )
 
     triggers = [call.trigger for call in context_manager.calls]

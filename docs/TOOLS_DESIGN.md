@@ -7,7 +7,7 @@
 Tools let a model request local actions without giving provider code direct
 filesystem or shell access. This layer owns three things: a model-visible
 definition, a local executor, and optional permission metadata. It does not
-decide policy; the permission wrapper does that.
+decide policy; `PermissionManager` combines policy and remembered grants.
 
 ## End-to-End Example: `view` a File
 
@@ -16,10 +16,10 @@ create_builtin_registry(project_root)
   -> Tool(definition, executor, permission spec)
   -> create_session_tool_registry injects task_boundary/retrieve_archive
   -> PermissionAwareToolRegistry wraps dispatch
-  -> AgentLoop puts registry.definitions() into ChatRequest.tools
+  -> AgentLoop filters currently available definitions into ChatRequest.tools
   -> provider returns ToolCall(name="view", arguments=...)
-  -> registry executes/preflights -> ToolResult
-  -> AgentLoop appends role=tool result and asks the provider again
+  -> ToolExecutor preflights through the session and dispatches the registry -> ToolResult
+  -> ToolExecutor records role=tool; AgentLoop asks the provider again
 ```
 
 The JSON Schema travels as `ChatRequest.tools`; provider adapters turn it into
@@ -28,7 +28,8 @@ prompt, so it is neither duplicated conversation text nor a security boundary.
 
 ## Core Contract
 
-`tools/types.py` defines concrete dataclasses:
+`ToolDefinition` is defined in `providers/types.py`; `tools/types.py` defines
+the tool and result dataclasses:
 
 | Type | Meaning |
 | --- | --- |
@@ -37,10 +38,23 @@ prompt, so it is neither duplicated conversation text nor a security boundary.
 | `ToolResult` | normalized `name`, `ok`, `content`, `data`, and `error` |
 | `ToolPermissionSpec` | how to derive a permission request from concrete arguments |
 
-An executor returns `ToolResult` rather than leaking exceptions into the agent
-loop. Consequently unknown names, invalid arguments, and executor failures can
-be returned to the model as a structured tool message and the session stays
-replayable.
+An executor returns `ToolResult`. `ToolRegistry.execute` also converts unknown
+names, invalid arguments, and execution exceptions into failed results. The
+model can read the failure reason, and the loop can record the outcome.
+
+### The Two Types Named ToolExecutor
+
+`tools.types.ToolExecutor` is the callable protocol for `Tool.executor`:
+accept arguments and return a `ToolResult`. `agent.tool_execution.ToolExecutor`
+is the runtime scheduler for batches, validation, permission pauses and resumes,
+parallel execution, and result recording. One describes a function; the other
+decides when those functions run.
+
+| Object | Responsibility |
+| --- | --- |
+| `agent.tool_execution.ToolExecutor` | Schedule execution, pauses, parallel/background work, and record results |
+| `PermissionAwareToolRegistry` | Build permission requests and obtain decisions from `PermissionManager` |
+| `ToolRegistry` | Find a tool by name, call `Tool.executor`, and normalize failures |
 
 ## Building and Wrapping a Registry
 
@@ -70,11 +84,12 @@ hallucinated main-model call. Do not scatter tool-name checks through the UI.
 
 ## Execution Rules
 
-`ToolRegistry.execute(name, arguments)` resolves exactly one name and
-normalizes failures. `PermissionAwareToolRegistry.execute` first derives a
-`PermissionRequest` from the tool's spec, then obtains an allow/ask/deny
-decision. `ASK` returns a structured signal instead of executing; `AgentLoop`
-stores the original call and resumes it after user input.
+`ToolRegistry.execute(name, arguments)` finds and executes a tool, normalizing
+failures. `PermissionAwareToolRegistry.preflight` builds a request and obtains
+an allow/ask/deny decision without executing the tool. During loop scheduling,
+`ToolExecutor` stores the original call and pauses on `ASK`, then resumes after
+the answer. Calling the permission wrapper's `execute` directly returns a
+structured confirmation signal on `ASK` and likewise does not execute the tool.
 
 Before a supported direct mutation reaches the executor, `ToolExecutor` also
 uses `tools.review.build_prewrite_review` to construct a trusted diff and file

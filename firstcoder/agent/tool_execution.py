@@ -1,7 +1,7 @@
 """Tool execution helpers for AgentLoop.
 
 Owns parallel-batch policy, interactive tool sequencing, permission pending
-storage, and tool-event emission shape so AgentLoop can stay orchestration-only.
+storage and resume, and tool-event emission so AgentLoop can coordinate turns.
 """
 
 from __future__ import annotations
@@ -29,9 +29,13 @@ from firstcoder.planning.reducer import TaskPlanCommandError, TaskPlanRevisionCo
 from firstcoder.planning.projection import ready_task_ids
 from firstcoder.planning.service import TaskPlanService
 from firstcoder.runtime.user_input import UserInputRequest, user_input_request_from_tool_result
-from firstcoder.permissions.types import PermissionDecisionKind, PermissionMode, PermissionRequest
+from firstcoder.permissions.types import PermissionDecision, PermissionDecisionKind, PermissionMode, PermissionRequest
 from firstcoder.providers.types import ToolCall
-from firstcoder.tools.permission_results import make_permission_denied_result, make_prewrite_review_failed_result
+from firstcoder.tools.permission_results import (
+    make_permission_denied_result,
+    make_prewrite_review_failed_result,
+    make_prewrite_review_stale_result,
+)
 from firstcoder.tools.review import build_prewrite_review, supports_prewrite_review
 from firstcoder.tools.hidden import HIDDEN_TOOL_STATUS_NAMES
 from firstcoder.tools.types import ToolResult, make_error_result
@@ -103,7 +107,11 @@ class _PermissionPreparation:
 
 
 class ToolExecutor:
-    """Execute tool batches for one AgentSession."""
+    """调度一个会话中的工具批次，处理权限暂停/恢复、并行执行和结果记录。
+
+    具体工具函数保存在 Tool.executor 中；tools.types.ToolExecutor 只描述这些函数的签名。
+    本类负责安排何时调用它们，不实现读文件、写文件等具体操作。
+    """
 
     def __init__(
         self,
@@ -499,6 +507,142 @@ class ToolExecutor:
         return _PermissionPreparation(
             result=self._prepare_bypass_mutation(tool_call, preflight=preflight),
             permission_request=preflight.request,
+        )
+
+    def resume_permission(self, pending: PendingPermissionExecution, answer: str) -> None:
+        """处理确认回答、执行本地保存的原调用，并补齐工具结果。
+
+        拒绝或预览失效时只记录失败结果。执行抛出异常时保留 pending，
+        交由上层的取消或异常处理收尾；不会提前把调用标成已完成。
+        """
+
+        result = self._prepare_permission_resume(pending, answer)
+        if result is None:
+            result = self.execute_after_permission_with_cancellation_context(pending.tool_call)
+            self._emit_event(
+                "finished", pending.tool_call, result=result,
+                permission_request=pending.permission_request,
+            )
+        self._finish_permission_resume(pending, result)
+
+    async def resume_permission_async(self, pending: PendingPermissionExecution, answer: str) -> None:
+        """流式路径仅将工具执行放入工作线程，事件和落库顺序与同步路径一致。"""
+
+        result = self._prepare_permission_resume(pending, answer)
+        if result is None:
+            result = await anyio.to_thread.run_sync(
+                self.execute_after_permission_with_cancellation_context, pending.tool_call,
+            )
+            self._emit_event(
+                "finished", pending.tool_call, result=result,
+                permission_request=pending.permission_request,
+            )
+        self._finish_permission_resume(pending, result)
+
+    def _prepare_permission_resume(
+        self,
+        pending: PendingPermissionExecution,
+        answer: str,
+    ) -> ToolResult | None:
+        """先判定这个回答要不要拦住执行, 并发观测事件。
+
+        返回 ToolResult: 被拦 (用户拒绝 / 写前预览失效), 调用方直接用该结果补洞;
+        返回 None: 放行, 调用方接着执行原始 tool_call。
+        """
+
+        result = self._blocked_permission_resume_result(pending, answer)
+        if result is not None:
+            self._emit_event(
+                "denied",
+                pending.tool_call,
+                result=result,
+                permission_request=pending.permission_request,
+            )
+            return result
+        self._emit_event(
+            "started",
+            pending.tool_call,
+            permission_request=pending.permission_request,
+        )
+        self._check_cancelled()
+        return None
+
+    def _finish_permission_resume(self, pending: PendingPermissionExecution, result: ToolResult) -> None:
+        """收尾: 清 pending, 把最终 tool_result 落库, 悬空 tool_call 至此闭合。"""
+
+        self.session.pending_permission_execution = None
+        if self._observe_tool_result is not None:
+            self._observe_tool_result(pending.tool_call, result)
+        self.session.append_tool_result(tool_call=pending.tool_call, result=result)
+        # 当初同批次里排在这个需审批调用之后的调用被跳过了, 这里补记为 skipped,
+        # 保证同批每个 tool_call 都有配对的收尾记录
+        self._emit_settlements("skipped", self.settlement.append_skipped(pending.skipped_tool_calls))
+
+    def _resolve_pending_confirmation(
+        self,
+        pending: PendingPermissionExecution,
+        answer: str,
+    ) -> PermissionDecision:
+        """把用户的文本回答解析成权限决定 (ALLOW / DENY)。
+
+        review_only (写前预览) 走单独分支: 同意前重新预检一遍, 防止预览期间文件
+        或策略变化, 避免"批准了一个现在已经不允许的修改"。未知回答一律按 DENY
+        处理 (fail-closed)。
+        """
+
+        permission_manager = self.session.permission_manager
+        assert permission_manager is not None
+        if not pending.review_only:
+            return permission_manager.resolve_confirmation(pending.permission_request, answer)
+        normalized = answer.strip().lower()
+        if normalized in {"allow_once", "allow", "once", "2"}:
+            current = self.session.preflight_tool_call_permission(pending.tool_call)
+            if current is not None and current.decision.kind == PermissionDecisionKind.DENY:
+                return current.decision
+            return PermissionDecision(kind=PermissionDecisionKind.ALLOW, reason="用户批准应用已预览的修改。")
+        if normalized in {"deny", "no", "1"} or normalized.startswith(("reject:", "reject_with_feedback:")):
+            return permission_manager.resolve_confirmation(pending.permission_request, answer)
+        return PermissionDecision(
+            kind=PermissionDecisionKind.DENY,
+            reason=f"未知写前预览选择：{answer}",
+        )
+
+    def _blocked_permission_resume_result(
+        self,
+        pending: PendingPermissionExecution,
+        answer: str,
+    ) -> ToolResult | None:
+        """算出"不执行原调用"时的合成 tool_result; 返回 None 表示放行执行。
+
+        三种拦截: ① 用户拒绝; ② 写前预览本身就失败; ③ 预览已过期 (确认期间
+        目标文件被改动, 旧 diff 不可信)。
+        """
+
+        decision = self._resolve_pending_confirmation(pending, answer)
+        if decision.kind == PermissionDecisionKind.DENY:
+            return make_permission_denied_result(
+                tool_name=pending.tool_call.name,
+                request=pending.permission_request,
+                decision=decision,
+            )
+        if pending.prewrite_review is None:
+            return None
+        if not pending.prewrite_review.ok:
+            return make_prewrite_review_failed_result(
+                tool_name=pending.tool_call.name,
+                request=pending.permission_request,
+                error=pending.prewrite_review.error or "未知错误",
+            )
+        permission_manager = self.session.permission_manager
+        assert permission_manager is not None
+        if pending.prewrite_review.is_current(
+            permission_manager.policy.project_root,
+            access=self.session.sandbox_access,
+        ):
+            return None
+        return make_prewrite_review_stale_result(
+            tool_name=pending.tool_call.name,
+            request=pending.permission_request,
         )
 
     def _record_result(

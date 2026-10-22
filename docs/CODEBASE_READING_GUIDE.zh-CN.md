@@ -10,6 +10,111 @@
 
 ---
 
+## 先读懂一轮对话
+
+第一次阅读，先从 [AgentLoop](../firstcoder/agent/loop.py) 的 `run_user_turn` 开始。
+暂时把构造函数当成已经接好的运行环境，遇到压缩、任务分类和后台通知时，先了解它们的用途即可。
+主循环按执行阶段分组；同一个阶段的同步与流式实现放在一起。
+
+先认四个名字：`ChatRequest` 是发给模型的请求，`ChatResponse` 是模型回复，
+`ToolCall` 是模型希望执行的操作，`ToolResult` 是本地执行结果。
+前三者在 [providers/types.py](../firstcoder/providers/types.py)，最后一个在
+[tools/types.py](../firstcoder/tools/types.py)。
+
+### 第一遍：模型直接回答
+
+只追下面这条路径，读到 `_complete_turn` 就停：
+
+```text
+run_user_turn(streaming=False)
+  → _run_user_turn_sync → _run_user_turn_sync_impl
+      记录用户消息，初始化或识别当前任务
+  → _run_tool_loop_interactive
+      _complete_once_with_recovery → _complete_once
+        准备上下文 → provider.complete(request)
+      回复没有 tool_calls，工具循环直接返回
+  → _complete_turn
+      保存最终回复，返回 AgentTurnResult
+```
+
+`streaming=False` 表示普通请求；这个对外入口本身仍是异步函数，
+内部通过工作线程运行同步实现。`streaming=True` 走对应的流式实现，
+模型事件经 `provider.astream` 返回，完整回复到达后才执行工具。
+
+### 第二遍：模型先调用一个工具
+
+接着看同一文件里的 `_continue_tool_loop_from_response`，再看
+[ToolExecutor.execute_interactive](../firstcoder/agent/tool_execution.py)：
+
+```text
+模型返回带 tool_calls 的回复
+  → 先保存 assistant 消息中的调用
+  → ToolExecutor 检查调用和权限，执行工具并保存结果
+  → 再请求模型，让它读取结果并决定下一步
+  → 仍有 tool_calls 就继续；没有就进入结束前检查
+```
+
+要看具体工具如何被找到，读 [ToolRegistry.execute](../firstcoder/tools/registry.py)，
+再挑一个工具，例如 [git_status](../firstcoder/tools/git_status.py)。
+先写调用、后写结果的顺序很重要：每个工具结果都要对应一个 `tool_call_id`。
+
+### 第三遍：写文件时等待用户确认
+
+```text
+ToolExecutor 保存 PendingPermissionExecution
+  → AgentLoop 返回 WAITING_FOR_USER_INPUT
+  → 界面收集回答，调用 resume_with_user_input
+  → AgentLoop 校验 request_id，沿用原轮次预算
+  → ToolExecutor.resume_permission / resume_permission_async
+      解析回答 → 检查写前预览 → 执行或生成拒绝结果
+      保存结果，为同批未执行的调用补齐 skipped 结果
+  → AgentLoop 继续请求模型
+```
+
+恢复时使用的是会话里保存的原始调用。用户回答不作为一条新的普通消息插入，
+因此不会把 `assistant(tool_calls) → tool(result)` 的配对切断。
+任务计划对账和完成检查也可能再次请求模型，它们集中在主循环的“结束前检查”部分。
+
+对应的可运行回归用例在 [test_agent_context_loop.py](../tests/test_agent_context_loop.py)。
+安装开发依赖后，从仓库根目录运行：
+
+```sh
+.venv/bin/python -m pytest tests/test_agent_context_loop.py -q -k 'permission_resume_preserves_results_events_and_budget'
+```
+
+该组用例同时覆盖普通与流式请求的批准、拒绝、预览过期、写前预览确认和未知回答，
+检查消息配对、事件顺序、预算以及重复确认不会再次执行工具。
+
+### 再往外看：界面如何进入主循环
+
+理解以上流程后，再读 [AgentChatRunner](../firstcoder/app/runtime.py)。它的入口和
+`AgentLoop` 有同名方法，但职责不同：runner 接收 CLI/TUI 输入并整理显示内容，
+loop 负责模型与工具的循环。
+
+```text
+CLI: runner.run_user_turn → runner.arun_user_turn
+TUI: await runner.arun_user_turn
+  → _start_turn：记录消息起点，登记取消令牌，创建 AgentLoop
+  → 工作线程中 asyncio.run(loop.run_user_turn(...))
+  → finally 撤销活跃取消令牌
+  → _finish_agent_result：保留权限暂停现场，更新事件与显示行
+```
+
+同步/异步入口与普通/流式请求是两个独立选项：前者取决于调用方是否已有事件循环，
+后者由 `use_streaming` 决定。权限回答走 `resume_with_user_input` / `aresume_with_user_input`；
+`_resume_turn` 会复用暂停的 loop，并重新绑定取消令牌和事件处理器，保留原轮次预算。
+`_create_loop` 直接列出模型、工具、上下文和回调依赖，可以在这里查看界面交给主循环什么。
+
+对应测试：
+
+```sh
+.venv/bin/python -m pytest tests/test_app_runtime.py -q -k entries_preserve_permission_resume_state
+```
+
+下面的架构地图和排障指南适合在读完这些路径后继续查阅。
+
+---
+
 ## 1. 读完应能做到
 
 | 用时 | 你应能… |

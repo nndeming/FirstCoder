@@ -50,6 +50,25 @@ UI/CLI 应依赖 `firstcoder.app.ports`（`ChatRunnerLike`、`CommandHandlerLike
 | `UserInputRequest` | `firstcoder.runtime.user_input`（permission / `ask_user`） | 交互 UI | 跨包共享的暂停/恢复契约（tools 不得为此 import agent） |
 | `UserAttachment` | composer/paste handler | runner/session | 随一轮用户输入发送的已暂存路径或剪贴板图片 |
 
+## 从聊天入口读起
+
+在 `app/runtime.py` 中，`AgentChatRunner` 按聊天入口、准备执行、整理结果、运行中更新、
+取消五个阶段排列。先读 `arun_user_turn`：它准备 loop、在线程中执行这一轮，
+通过 `finally` 撤销活跃取消令牌，再统一整理显示结果。
+
+CLI 的 `run_user_turn` 用 `asyncio.run` 调用这个异步入口；TUI 已有事件循环，直接 await。
+是否启用流式输出由 `use_streaming` 独立决定。
+
+权限回答走 `aresume_with_user_input`：`_resume_turn` 优先复用暂停的 loop，
+重新绑定取消令牌和事件处理器；预算不会因为确认一次权限就重置。
+`_finish_agent_result` 集中更新 pending input、暂停的 loop、模型事件和本轮显示行。
+创建 `AgentLoop` 时的完整依赖在 `_create_loop` 的具名参数中直接列出。
+
+`app.ports.ContextManagerLike` 与 `agent.ports.ContextManagerLike` 共用同一个接口定义，
+聊天接口也明确了同步与异步方法都返回 `ChatResponse`。
+任务分类的两个具名方法继续保留在 `AgentLoop`：评测子类会覆盖它们来控制实验分组，
+因此它们属于扩展点，不能因为方法体较短就直接合并。
+
 ## 用户可见模式
 
 `firstcoder/cli.py` 当前会路由这些模式：

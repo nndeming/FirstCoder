@@ -77,15 +77,20 @@ tool definitions. Tool JSON schemas are not duplicated in the system message.
 | --- | --- |
 | `loop.py` | turn transaction, compact triggers, stop/pause orchestration |
 | `loop_limits.py` | budgets and stop-reason enums |
-| `tool_execution.py` | execute/record tool calls |
+| `tool_execution.py` | tool batches, permission resume, and result recording |
 | `tool_flow.py` / `tool_settlement.py` | batch flow and settlement |
 | `task_plan_policy.py` | active TaskPlan lookup and one-time final reconciliation |
 | `task_boundary_classifier.py` | task-boundary classification helpers |
 | `ports.py` | minimal `ContextManagerLike` for the loop |
 
-Compact call sites should prefer named helpers on the loop
-(`_auto_compact`, `_compact_for_prompt_too_long`,
-`_compact_after_task_hash_changed`) so the *intent* is obvious.
+Automatic compaction runs in `_prepare_main_provider_request`. Oversized requests
+and task switches use `_compact_for_prompt_too_long` and
+`_compact_after_task_hash_changed` respectively.
+
+For permission resume, the loop validates the request, maintains turn budgets,
+and continues model orchestration. `ToolExecutor.resume_permission` and its
+async counterpart own answer resolution, preview validation, execution, events,
+and tool-result settlement.
 
 Shared DTOs used by tools/permissions/utils live in `firstcoder.runtime`, not
 in the loop package. See [ARCHITECTURE.md](ARCHITECTURE.md).
