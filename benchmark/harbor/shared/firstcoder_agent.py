@@ -1,9 +1,8 @@
-"""Harbor installed-agent adapter for FirstCoder.
+"""将 FirstCoder 作为已安装代理运行的 Harbor 适配器。
 
-The adapter stages only the local FirstCoder package into each task container,
-then runs one non-interactive ``--benchmark`` turn in Harbor's task workdir.
-It intentionally does not inspect verifier files or inject benchmark-specific
-hints into the task instruction.
+适配器仅将本地 FirstCoder 包放入各任务容器，然后在 Harbor 任务工作目录中
+执行一轮非交互式 ``--benchmark`` 调用。它不会读取验证器文件，
+也不会向任务指令注入基准专用提示。
 """
 
 from __future__ import annotations
@@ -27,9 +26,9 @@ _AGENT_ROOT: Final = "/opt/firstcoder-agent"
 _REMOTE_SOURCE_DIR: Final = "/installed-agent/firstcoder-src"
 _SESSION_ROOT: Final = "/tmp/firstcoder-harbor-sessions"
 _CONFIG_ROOT: Final = "/tmp/firstcoder-harbor-config"
-# Download cache for pip/uv. Bind-mount a host directory here (Harbor
-# ``--mounts``) so FirstCoder's dependencies download once and are reused
-# across trials and containers instead of being fetched for every task.
+# pip/uv 下载缓存。可通过 Harbor 的 ``--mounts`` 将主机目录
+# 绑定到此处，使 FirstCoder 依赖只需下载一次，
+# 并可跨试验与容器复用，避免每个任务都重新下载。
 _CACHE_DIR: Final = "/opt/firstcoder-cache"
 _WHEELHOUSE_DIR: Final = "/opt/firstcoder-wheelhouse"
 _DEFAULT_PACKAGE: Final = (
@@ -38,13 +37,11 @@ _DEFAULT_PACKAGE: Final = (
 
 
 class FirstCoderHarborAgent(BaseInstalledAgent):
-    """Run the current FirstCoder checkout as a Harbor installed agent.
+    """将当前 FirstCoder 检出版本作为 Harbor 已安装代理运行。
 
-    ``source_dir`` is deliberately the default installation source.  It lets a
-    local benchmark exercise the exact checkout under development, including
-    uncommitted prompt or context changes, without uploading the user's whole
-    repository, virtualenv, session data, or configuration files.  ``package``
-    is an explicit fallback for callers that cannot stage a local checkout.
+    默认安装源为 ``source_dir``，使本地基准测试能够使用正在开发的确切代码，
+    包括未提交的提示或上下文改动，无需上传用户整个仓库、虚拟环境、会话数据
+    或配置文件。无法暂存本地代码时，调用方可显式使用 ``package`` 作为备用源。
     """
 
     def __init__(
@@ -84,7 +81,7 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
-        """Install FirstCoder into an isolated venv inside the task container."""
+        """在任务容器的隔离虚拟环境中安装 FirstCoder。"""
 
         install_spec = await self._prepare_install_spec(environment)
         agent_user = str(environment.default_user or "root")
@@ -96,8 +93,8 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
                 f"mkdir -p {shlex.quote(_AGENT_ROOT)} {shlex.quote(_AGENT_ROOT + '/bin')} "
                 f"{shlex.quote(_CACHE_DIR)} {shlex.quote(_WHEELHOUSE_DIR)}; "
                 f"chown -R {quoted_user}:{quoted_user} {shlex.quote(_AGENT_ROOT)}; "
-                # The cache may be a shared bind mount; only fix ownership of the
-                # mount point itself so a pre-populated host cache is left intact.
+                # 缓存可能是共享绑定挂载；只修改挂载点本身的所有者，
+                # 保留主机端已填充缓存的原有状态。
                 f"chown {quoted_user}:{quoted_user} {shlex.quote(_CACHE_DIR)}"
             ),
         )
@@ -118,9 +115,9 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
-        """Run one FirstCoder benchmark turn in Harbor's configured workdir."""
+        """在 Harbor 配置的工作目录中执行一轮 FirstCoder 基准测试。"""
 
-        del context  # FirstCoder persists its own local benchmark transcript.
+        del context  # FirstCoder 会自行保存本地基准测试对话记录。
         resume_session = instruction.startswith("The tests are correct. Do not modify the tests.")
         attachments = (
             []
@@ -136,13 +133,13 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
         await self.exec_as_agent(
             environment,
             command=command,
-            # Harbor overlays AgentConfig.env after this per-command environment,
-            # so users may explicitly override this default in a job config.
+            # Harbor 会在每条命令的环境之上覆盖 AgentConfig.env，
+            # 因此用户可在任务配置中显式覆盖此默认值。
             env={"FIRSTCODER_DISABLE_GLOBAL_SKILLS": "1"},
         )
 
     async def _prepare_install_spec(self, environment: BaseEnvironment) -> str:
-        """Stage a minimal local source tree, or return an explicit package spec."""
+        """暂存最小本地源码树，或返回显式指定的包安装规格。"""
 
         if self._package is not None:
             return self._package
@@ -195,7 +192,7 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
         return paths
 
     def _stage_local_source(self) -> Path:
-        """Create the minimal host-side package tree copied into a task image."""
+        """创建要复制进任务镜像的最小主机端包目录。"""
 
         source = self._source_dir
         if source is None:
@@ -266,7 +263,7 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
 
     @staticmethod
     def _python_setup_command() -> str:
-        """Ensure FirstCoder has an isolated Python 3.11+ runtime across task images."""
+        """确保各任务镜像中都有隔离的 Python 3.11 及以上运行环境。"""
 
         return """set -euo pipefail
 AGENT_ROOT=/opt/firstcoder-agent
@@ -288,8 +285,8 @@ has_venv() {
   rm -rf "$venv_probe"
   return "$status"
 }
-# System package installs share upstream mirrors across concurrent trials, so
-# retry with backoff to absorb transient apt/apk/dnf failures (e.g. apt exit 100).
+# 多个并行试验安装系统包时共用上游镜像源，因此使用退避重试，
+# 应对 apt/apk/dnf 的临时故障，例如 apt 退出码 100。
 retry() {
   attempt=1
   until "$@"; do
@@ -479,8 +476,8 @@ def _install_command(install_spec: str) -> str:
         'if [ -z "$PYTHON_BIN" ]; then '
         '  echo "FirstCoder Harbor agent requires Python 3.11 or newer in the task image." >&2; exit 64; '
         'fi; '
-        # The download cache is shared across concurrent trials; retry the
-        # install with backoff so a single flaky fetch does not error the trial.
+        # 下载缓存由并行试验共享；安装时采用退避重试，
+        # 避免单次不稳定下载导致整个试验报错。
         'mkdir -p "$CACHE_DIR"; '
         'PIP_FIND_LINKS_ARGS=""; '
         'PIP_INDEX_ARGS=""; '

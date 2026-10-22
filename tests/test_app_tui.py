@@ -1162,7 +1162,7 @@ def test_firstcoder_app_can_be_created_with_composite_handler_and_chat_runner() 
     context_handler = ContextCommandHandler(session=FakeSession(), budget_provider=_context_budget)
     composite = CompositeCommandHandler(
         [
-            SessionCommandHandler(catalog=object()),  # constructor storage only; not used by this test
+            SessionCommandHandler(catalog=object()),  # 仅用于构造函数存储，本测试不会使用。
             context_handler,
         ]
     )

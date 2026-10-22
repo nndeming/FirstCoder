@@ -284,12 +284,12 @@
 
   <script>
     /**
-     * All themes are Yuren-provider-only.
-     * existing = already in yuren_topbar_themes.py
-     * proposed = new for this pass
+     * 所有主题仅适用于 Yuren 模型服务。
+     * existing 表示已收录于 yuren_topbar_themes.py
+     * proposed 表示本轮新增提案
      */
     const themes = [
-      // —— GPT 5.6 celestial trio (existing) ——
+      // —— GPT 5.6 天体主题三色组（已有） ——
       {
         family: "gpt-5.6",
         model: "gpt-5.6-terra",
@@ -312,7 +312,7 @@
         palette: ["#f4f6ff", "#c9d5ff", "#b9c8ff", "#a99ee8", "#d9e7ff"],
       },
 
-      // —— GPT mainline ladder ——
+      // —— GPT 主系列颜色梯度 ——
       {
         family: "gpt-mainline",
         model: "gpt-5.5",
@@ -335,7 +335,7 @@
         palette: ["#f0fff8", "#c9f5e1", "#9be7c8", "#6fd4d0", "#8ec5ff"],
       },
 
-      // —— Grok ——
+      // —— Grok 主题 ——
       {
         family: "grok",
         model: "grok-4.5",
@@ -344,7 +344,7 @@
         palette: ["#f0e7ff", "#d2b4ff", "#b57bff", "#8b5cf6", "#5ce1ff"],
       },
 
-      // —— Fable ——
+      // —— Fable 主题 ——
       {
         family: "fable",
         model: "fable-5",
@@ -353,7 +353,7 @@
         palette: ["#ffe9bf", "#ffc857", "#f0a05a", "#e07850", "#c7a0ff"],
       },
 
-      // —— Opus family ——
+      // —— Opus 系列 ——
       {
         family: "opus",
         model: "claude-opus-4-7",
@@ -369,7 +369,7 @@
         palette: ["#ffd6e0", "#ff9aa8", "#ff6f61", "#d94848", "#ffc36b"],
       },
 
-      // —— Sonnet family ——
+      // —— Sonnet 系列 ——
       {
         family: "sonnet",
         model: "claude-sonnet-5",
@@ -520,11 +520,11 @@
       for (const item of themes) {
         const tuple = ", ".join ? null : null;
         const body = item.palette.map((c) => `"${c}"`).join(", ");
-        const note = item.status === "existing" ? "  # existing" : "  # proposed";
+        const note = item.status === "existing" ? "  # 已有主题" : "  # 新增提案";
         lines.push(`    "${item.model}": (${body}),${note}`);
       }
       lines.push("}");
-      // fix fake join
+      // 修正占位的拼接逻辑
       document.getElementById("dictCode").textContent = lines.join("\n").replace("const lines error", "");
     }
 

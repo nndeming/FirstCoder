@@ -1,4 +1,4 @@
-"""Discover project-local and machine-global skills."""
+"""发现项目内与机器全局的技能。"""
 
 from __future__ import annotations
 

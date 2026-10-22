@@ -301,13 +301,13 @@ def _fit_placeholder(lines: list[str], *, maximum: int) -> str:
 
         0: [Tool result archived]      ┐
         1: archive_id=ar_xxx           │
-        2: tool=...                    │  身份信息 (required 前 6 行)
+        2: tool=...                    │  身份信息（必需的前 6 行）
         3: status=...                  │
         4: lifecycle=...               │
         5: original_tokens=...         ┘
-        6: summary=...                 <- optional
+        6: summary=...                 <- 可选行
         7+: key_errors=...             <- 哪个桶都不在, 裁剪时最先丢
-        8: Use retrieve_archive(archive_id, ...) ...   <- required 最后一行
+        8: Use retrieve_archive(archive_id, ...) ...   <- 必需的最后一行
 
     裁剪有明确的牺牲顺序: summary 是唯一面向模型、可伸缩的字段, 先砍它;
     key_errors 哪个桶都不在, 进入裁剪分支即被丢弃. 无论怎么裁,
@@ -334,7 +334,7 @@ def _fit_placeholder(lines: list[str], *, maximum: int) -> str:
 
 def _default_summary(part: MessagePart, *, original_tokens: int) -> str:
     tool_name = str(part.metadata.get("tool_name") or "tool")
-    # Keep the automatic summary short and language-stable.  The full output
-    # remains in the archive; the placeholder only needs enough context for
-    # the model to decide whether retrieval is worthwhile.
+    # 自动摘要应保持简短，且不随输出语言变化。完整输出仍保存在归档中，
+    # 占位符只需提供足够的上下文，
+    # 让模型判断是否值得取回原文。
     return f"Large {tool_name} result ({original_tokens} tokens)"

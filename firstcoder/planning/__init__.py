@@ -1,7 +1,7 @@
-"""Unified task-plan domain types and pure derived views.
+"""统一的任务计划领域类型及纯派生视图。
 
-The package deliberately contains no agent/runtime imports: TaskPlan structure,
-validation, and projections remain deterministic and independently testable.
+本包不导入代理或运行时模块，使 TaskPlan 的结构、验证与投影视图
+保持确定性，并可独立测试。
 """
 
 from __future__ import annotations

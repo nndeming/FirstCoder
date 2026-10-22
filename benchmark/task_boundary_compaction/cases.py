@@ -1,4 +1,4 @@
-"""Load and materialize verifier-backed benchmark cases."""
+"""加载并生成带验证器的基准测试用例。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from benchmark.task_boundary_compaction.models import BenchmarkCase, TurnSpec
 
 @dataclass(frozen=True, slots=True)
 class RepositoryFile:
-    """One text file materialized into a disposable controlled task project."""
+    """写入一次性受控任务项目中的文本文件。"""
 
     path: str
     content: str
@@ -27,7 +27,7 @@ class RepositoryFile:
 
 @dataclass(frozen=True, slots=True)
 class ControlledCase:
-    """A deterministic, verifier-backed fixture for the causal pilot."""
+    """用于因果预实验、确定且带验证器的测试样例。"""
 
     benchmark_case: BenchmarkCase
     repository_files: tuple[RepositoryFile, ...]
@@ -39,7 +39,7 @@ class ControlledCase:
 
 @dataclass(frozen=True, slots=True)
 class HistoricalCase:
-    """A real FirstCoder change reconstructed from its parent snapshot."""
+    """根据父版本快照重建的真实 FirstCoder 改动。"""
 
     benchmark_case: BenchmarkCase
     base_commit: str
@@ -54,7 +54,7 @@ class HistoricalCase:
 
 @dataclass(frozen=True, slots=True)
 class HistoricalMaterialization:
-    """Paths created for one isolated historical task trial."""
+    """单次隔离历史任务试验创建的路径集合。"""
 
     worktree: Path
     focused_test_files: tuple[Path, ...]
@@ -62,7 +62,7 @@ class HistoricalMaterialization:
 
 @dataclass(frozen=True, slots=True)
 class AiderTask:
-    """One local Aider Polyglot task whose solution directory is never read."""
+    """本地 Aider Polyglot 任务，其解答目录不会被读取。"""
 
     task_id: str
     task_root: Path
@@ -74,7 +74,7 @@ class AiderTask:
 
 @dataclass(frozen=True, slots=True)
 class AiderChainCase:
-    """A recorded same-task A sequence followed by independent task B."""
+    """已录制的同任务 A 序列，后接独立任务 B。"""
 
     benchmark_case: BenchmarkCase
     chain_type: Literal["natural", "batch"]
@@ -88,7 +88,7 @@ class AiderChainCase:
 
 
 def load_controlled_cases(manifest_path: str | Path) -> tuple[ControlledCase, ...]:
-    """Load committed deterministic cases without consulting the surrounding Git history."""
+    """加载已提交的确定性用例，不读取外层 Git 历史。"""
 
     manifest = _load_manifest(manifest_path)
     raw_cases = manifest.get("cases")
@@ -120,7 +120,7 @@ def load_controlled_cases(manifest_path: str | Path) -> tuple[ControlledCase, ..
 
 
 def load_historical_cases(manifest_path: str | Path, *, repo_root: str | Path) -> tuple[HistoricalCase, ...]:
-    """Load manifest entries and prove each base is the target's first parent."""
+    """加载清单项，并验证各基础版本确为目标提交的第一父提交。"""
 
     manifest = _load_manifest(manifest_path)
     raw_cases = manifest.get("cases")
@@ -180,7 +180,7 @@ def load_aider_chain_cases(
     *,
     aider_root: str | Path,
 ) -> tuple[AiderChainCase, ...]:
-    """Load genuine Aider task chains without reading reference solutions."""
+    """加载真实 Aider 任务链，不读取参考解答。"""
 
     manifest = _load_manifest(manifest_path)
     raw_cases = manifest.get("cases")
@@ -253,7 +253,7 @@ def load_aider_chain_cases(
 
 
 def materialize_aider_task(task: AiderTask, *, destination: str | Path) -> Path:
-    """Copy only an exercise workspace into a disposable agent project."""
+    """仅将练习工作区复制到一次性代理项目。"""
 
     target = Path(destination)
     _copy_aider_workspace(task, destination=target)
@@ -266,7 +266,7 @@ def materialize_aider_batch(
     *,
     destination: str | Path,
 ) -> tuple[tuple[str, Path], ...]:
-    """Place each A exercise in a named child directory of one batch project."""
+    """将每个 A 练习放入同一批次项目中各自命名的子目录。"""
 
     root = Path(destination)
     if root.exists():
@@ -287,7 +287,7 @@ def materialize_historical_case(
     repo_root: str | Path,
     destination: str | Path,
 ) -> HistoricalMaterialization:
-    """Create a fresh base snapshot and overwrite only its target-version focused tests."""
+    """创建全新基础快照，仅覆盖为目标版本准备的专项测试。"""
 
     root = Path(repo_root)
     worktree = Path(destination)
@@ -308,7 +308,7 @@ def materialize_historical_case(
 
 
 def materialize_controlled_case(case: ControlledCase, *, destination: str | Path) -> Path:
-    """Write the case's fixed files into a fresh disposable project directory."""
+    """将用例的固定文件写入全新的一次性项目目录。"""
 
     worktree = Path(destination)
     if worktree.exists():
@@ -355,7 +355,7 @@ def _copy_aider_workspace(task: AiderTask, *, destination: Path) -> None:
 
 
 def _initialize_disposable_git_repository(project_root: Path) -> None:
-    """Prevent temporary exercises from walking upward into the FirstCoder Git tree."""
+    """防止临时练习向上查找到 FirstCoder 的 Git 工作树。"""
 
     subprocess.run(["git", "init", "--quiet"], cwd=project_root, check=True)
     subprocess.run(["git", "add", "--all"], cwd=project_root, check=True)

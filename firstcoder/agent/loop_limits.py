@@ -1,4 +1,4 @@
-"""Agent loop budget and stop-reason types."""
+"""代理循环的预算与停止原因类型。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ class AgentLoopStopReason(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class AgentLoopLimits:
-    """Configurable guardrails for one user turn."""
+    """单轮用户对话中可配置的执行限制。"""
 
     max_tool_rounds: int | None = 200       # 工具调用轮次上限
     max_provider_calls: int | None = 400    # 模型API调用次数上限

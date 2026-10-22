@@ -1,4 +1,4 @@
-"""Provider decorator that records benchmark cost without retaining model content."""
+"""记录基准开销的模型服务包装器，不保留模型内容。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ _L4_SYSTEM_PREFIX = "你是 FirstCoder 的上下文压缩器。"
 
 @dataclass(frozen=True, slots=True)
 class TokenTotals:
-    """One bucket's token subtotal, preserving unknown provider fields as ``None``."""
+    """单个分类的词元小计，模型服务未提供的字段保留为 ``None``。"""
 
     input_tokens: int | None
     output_tokens: int | None
@@ -26,7 +26,7 @@ class TokenTotals:
 
 
 class RecordingProvider(ChatProvider):
-    """Delegate non-streaming calls and retain only safe benchmark metrics."""
+    """转发非流式调用，仅保留安全的基准指标。"""
 
     def __init__(self, wrapped: ChatProvider) -> None:
         self._wrapped = wrapped
@@ -75,7 +75,7 @@ class RecordingProvider(ChatProvider):
 
 
 def usage_totals(metrics: Sequence[ProviderCallMetric]) -> dict[CallBucket, TokenTotals]:
-    """Return per-call-kind and all-call token totals without treating unknown as zero."""
+    """按调用类型及全部调用返回词元总量，不将未知值当作零。"""
 
     buckets: dict[CallBucket, tuple[ProviderCallMetric, ...]] = {
         "main": tuple(metric for metric in metrics if metric.kind == "main"),

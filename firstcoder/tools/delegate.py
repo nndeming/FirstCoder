@@ -1,4 +1,4 @@
-"""Delegate tool for running restricted FirstCoder subagents."""
+"""运行受限 FirstCoder 子代理的委派工具。"""
 
 from __future__ import annotations
 
@@ -21,11 +21,10 @@ def create_delegate_tool(
     parent_session_id: str,
     parent_task_hash: str | None = None,
 ) -> Tool:
-    """Create the parent-facing delegate tool.
+    """创建供父会话使用的委派工具。
 
-    Background execution itself is handled by ToolExecutor's generic Phase 1
-    `run_in_background` control field.  The delegate executor keeps foreground
-    semantics and receives cleaned arguments.
+    后台执行由 ToolExecutor 第一阶段引入的通用 ``run_in_background`` 控制字段
+    处理。委派执行器保留前台语义，接收已清理控制字段的参数。
     """
 
     def delegate(
@@ -36,9 +35,9 @@ def create_delegate_tool(
         isolate_worktree: bool = False,
         **kwargs: Any,
     ) -> ToolResult:
-        # ``isolate_worktree`` is an internal control field injected by the parent
-        # ToolExecutor when it backgrounds a mutation-capable role; it is not part of
-        # the model-visible schema.
+        # ``isolate_worktree`` 是父会话 ToolExecutor 注入的内部控制字段，
+        # 用于将可修改文件的角色转入后台执行；
+        # 它不属于模型可见的工具参数定义。
         if kwargs:
             return make_error_result("delegate", f"未知参数：{', '.join(sorted(kwargs))}")
         normalized_role = str(role).strip()

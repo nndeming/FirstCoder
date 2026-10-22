@@ -1,4 +1,4 @@
-"""Resolve discovered skills and render the model-visible catalog."""
+"""解析已发现的技能，并渲染模型可见的技能目录。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ SKILL_CATALOG_TRUNCATED = "Skill catalog truncated: not every skill name fits th
 
 
 def resolve_skill_catalog(catalog: SkillCatalog) -> SkillCatalog:
-    """Return one deterministic effective definition for each skill name."""
+    """为每个技能名称返回唯一且确定的有效定义。"""
 
     selected: dict[str, SkillDefinition] = {}
     for skill in sorted(catalog.skills, key=_resolution_key):
@@ -23,7 +23,7 @@ def resolve_skill_catalog(catalog: SkillCatalog) -> SkillCatalog:
 
 
 def render_skill_catalog(catalog: SkillCatalog) -> str:
-    """Render whole catalog lines within the fixed system-prompt budget."""
+    """在固定的系统提示预算内渲染完整的目录行。"""
 
     skills = resolve_skill_catalog(catalog).skills
     if not skills:
@@ -31,8 +31,8 @@ def render_skill_catalog(catalog: SkillCatalog) -> str:
 
     footer = SKILL_LOAD_INSTRUCTION
     name_lines = [f"- {skill.name}:" for skill in skills]
-    # Reserve one separator space per skill because normal rows are rendered as
-    # ``- name: description``. This keeps the final string within the budget.
+    # 普通行按 ``- name: description`` 渲染，因此每个技能预留一个分隔空格，
+    # 保证最终字符串不超过预算。
     fixed_cost = _joined_length([*name_lines, footer]) + len(skills)
     if fixed_cost > SKILL_CATALOG_MAX_CHARS:
         return _render_name_only_prefix(name_lines)

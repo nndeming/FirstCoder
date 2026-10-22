@@ -1,12 +1,12 @@
-"""Subagent runner for the Phase 2 delegate tool.
+"""第二阶段委派工具的子代理执行器。
 
-The first implementation keeps the boundary deliberately small:
+首版实现将职责边界限制为：
 
-- child sessions are fresh and metadata-tagged;
-- tool access is profile restricted;
-- children do not receive the delegate tool, preventing recursion;
-- foreground execution returns only a compact summary to the parent;
-- background execution is handled by the Phase 1 generic async runtime.
+- 为子代理创建带元数据标记的新会话；
+- 按配置限制工具访问；
+- 不向子代理提供委派工具，避免递归；
+- 前台执行只向父会话返回精简摘要；
+- 后台执行交由第一阶段的通用异步运行机制处理。
 """
 
 from __future__ import annotations
@@ -152,7 +152,7 @@ class SubagentResult:
 
 
 class SubagentRunner:
-    """Create and run isolated child AgentLoop sessions for delegate."""
+    """为委派任务创建并运行隔离的子 AgentLoop 会话。"""
 
     def __init__(
         self,
@@ -223,12 +223,11 @@ class SubagentRunner:
         return self._run_inline(request, profile=profile)
 
     def _needs_worktree(self, request: SubagentRequest, *, profile: SubagentProfile) -> bool:
-        """Whether this run must execute inside an isolated git worktree.
+        """判断本次执行是否必须使用隔离的 Git 工作树。
 
-        Mutation-capable roles isolate when running in the background so a
-        background job can never touch the parent working tree.  Callers can also
-        force isolation explicitly via ``request.isolate_worktree`` (used by the
-        parent ToolExecutor when it backgrounds a coder delegate).
+        可修改文件的角色在后台运行时必须隔离，确保后台任务不会触碰父会话工作树。
+        调用方也可通过 ``request.isolate_worktree`` 显式要求隔离；
+        父会话的 ToolExecutor 将编码委派转入后台时会使用该字段。
         """
 
         if request.isolate_worktree:
@@ -236,7 +235,7 @@ class SubagentRunner:
         return bool(profile.requires_worktree and request.run_in_background)
 
     def _run_inline(self, request: SubagentRequest, *, profile: SubagentProfile) -> SubagentResult:
-        """Original Phase 2 behaviour: run the child against the parent-rooted tools."""
+        """第二阶段的原始行为：子代理使用以父会话目录为根的工具。"""
 
         child_session = self.create_child_session(request, profile=profile)
         prompt = self._child_prompt(request, profile=profile)
@@ -273,13 +272,11 @@ class SubagentRunner:
         )
 
     def _run_isolated(self, request: SubagentRequest, *, profile: SubagentProfile) -> SubagentResult:
-        """Phase 4: run a mutation-capable child inside a dedicated git worktree.
+        """第四阶段：在专用 Git 工作树中运行可修改文件的子代理。
 
-        The child gets fresh tools rooted at the worktree and a child
-        ``PermissionManager`` whose ``project_root`` is the worktree path, so it
-        can never read or mutate the parent working tree.  On completion the
-        worktree is left in place and a diff summary is returned for explicit
-        parent review; nothing is auto-merged.
+        为子代理重新创建以隔离工作树为根的工具，以及 ``project_root`` 指向该路径的
+        子 ``PermissionManager``，确保其无法读写父会话工作树。任务结束后保留工作树，
+        并返回差异摘要供父会话显式审查，不自动合并。
         """
 
         if self.project_root is None:
@@ -399,11 +396,10 @@ class SubagentRunner:
         return child
 
     def _supplied_tools_for_child(self, role: str) -> list[Tool]:
-        """Tools passed into AgentSession.create, excluding session-reserved tools.
+        """传给 AgentSession.create 的工具，不包含会话保留工具。
 
-        ``retrieve_archive`` is injected by ``create_session_tool_registry`` for
-        each session, so passing the parent session's instance would violate the
-        reserved-name guard.
+        ``retrieve_archive`` 由 ``create_session_tool_registry`` 为每个会话单独注入，
+        传入父会话的工具实例会触发保留名称检查。
         """
 
         return [tool for tool in self.tools_for_role(role) if tool.name != "retrieve_archive"]
@@ -416,17 +412,16 @@ class SubagentRunner:
         worktree: Worktree,
         session_id: str,
     ) -> AgentSession:
-        """Create a child session whose permissions/tools are rooted at the worktree.
+        """创建工具与权限均以隔离工作树为根的子会话。
 
-        The child gets its own ``PermissionManager`` (or a private clone of the
-        parent's) whose ``project_root`` is the worktree path, so every path,
-        shell, and git decision is evaluated against the isolated tree instead of
-        the parent working directory.
+        子会话使用独立的 ``PermissionManager``，或父权限管理器的私有副本，
+        其 ``project_root`` 指向隔离工作树。因此，路径、命令与 Git 操作的
+        权限判断都基于隔离目录，不使用父会话工作目录。
         """
 
         permission_manager = self._child_permission_manager(worktree.path)
-        # PROJECT sandbox keeps every file tool physically confined to the worktree
-        # root even though the policy auto-allows in-tree writes.
+        # PROJECT 沙箱将每个文件工具的实际访问范围限制在隔离工作树内，
+        # 即使权限策略自动允许树内写入，也不会突破该范围。
         sandbox_access = SandboxAccess(mode=SandboxAccessMode.PROJECT)
         child = AgentSession.create(
             store=self.store,
@@ -437,9 +432,9 @@ class SubagentRunner:
             permission_manager=permission_manager,
             sandbox_access=sandbox_access,
         )
-        # Background isolated coder has no interactive user, so per-write review
-        # confirmations would deadlock the job.  The worktree diff is reviewed by the
-        # parent instead, so disable the pausing prewrite-review path here.
+        # 隔离的后台编码代理没有交互用户，逐次写入审查会让任务无法继续。
+        # 工作树差异改由父会话审查，因此这里关闭会暂停执行的
+        # 写入前审查流程。
         child.require_prewrite_review = False
         child.writer.append_session_metadata_updated(
             parent_session_id=request.parent_session_id,
@@ -452,15 +447,12 @@ class SubagentRunner:
         return child
 
     def _child_permission_manager(self, root) -> PermissionManager:
-        """Build an autonomous permission manager scoped to the worktree root.
+        """创建以隔离工作树为根、可自主执行任务的权限管理器。
 
-        The policy root is the worktree path, so every path/shell/git decision is
-        evaluated against the isolated tree.  AGGRESSIVE mode auto-allows in-tree
-        writes and a safe validation-command allow-list so the background coder can
-        make progress without an interactive user, while sensitive paths, deletes,
-        and dangerous shell still require confirmation (and will simply pause the
-        job rather than escape the sandbox).  A fresh grant store avoids inheriting
-        parent-scoped grants.
+        所有路径、命令与 Git 操作的权限判断均以隔离工作树为准。AGGRESSIVE 模式
+        自动允许树内写入及安全验证命令白名单，使后台编码代理无需交互也能推进任务。
+        敏感路径、删除操作与危险命令仍需确认，此时任务会暂停，不会越过沙箱。
+        使用全新的授权存储，避免继承仅适用于父会话的授权。
         """
 
         grants = PermissionGrantStore()
@@ -491,11 +483,10 @@ class SubagentRunner:
         access: SandboxAccess,
         for_registry: bool = False,
     ) -> list[Tool]:
-        """Build fresh tools rooted at the worktree for the child's role.
+        """按子代理角色重新创建以隔离工作树为根的工具。
 
-        Tools are rebuilt (not reused from the parent) so their internal path
-        sandboxes point at the worktree, not the parent cwd.  ``for_registry``
-        excludes session-reserved tool names when passing into ``AgentSession``.
+        不复用父会话工具，确保工具内部的路径沙箱指向隔离工作树。
+        传入 ``AgentSession`` 时，通过 ``for_registry`` 排除会话保留工具名。
         """
 
         from firstcoder.tools.builtin import create_builtin_registry

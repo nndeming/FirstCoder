@@ -74,11 +74,11 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """Lazily expose tools that depend on agent-layer runtime objects.
+    """延迟导出依赖代理层运行时对象的工具。
 
-    Importing ``firstcoder.tools`` is part of low-level context/writer startup.
-    ``delegate`` depends on ``firstcoder.agent.subagent`` and therefore cannot be
-    imported eagerly here without creating a package-level cycle.
+    底层上下文与写入器启动时会导入 ``firstcoder.tools``。
+    ``delegate`` 依赖 ``firstcoder.agent.subagent``，若在此立即导入，
+    会形成包级循环依赖。
     """
 
     if name == "create_delegate_tool":

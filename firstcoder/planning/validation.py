@@ -1,4 +1,4 @@
-"""Structural and execution-state validation for canonical task plans."""
+"""统一任务计划的结构与执行状态验证。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Security hardening tests for sandbox, fetch, and permission policy."""
+"""沙箱、网络抓取与权限策略的安全加固测试。"""
 
 from __future__ import annotations
 

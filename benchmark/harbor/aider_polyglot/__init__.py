@@ -1,1 +1,1 @@
-"""Harbor integration for the Aider Polyglot feedback protocol."""
+"""Aider Polyglot 反馈协议的 Harbor 集成。"""

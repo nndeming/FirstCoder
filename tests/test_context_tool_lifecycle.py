@@ -1,4 +1,4 @@
-"""Pure tool-result lifecycle index tests."""
+"""工具结果生命周期索引的纯逻辑测试。"""
 
 from __future__ import annotations
 

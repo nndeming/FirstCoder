@@ -1,4 +1,4 @@
-"""Read the authoritative task plan and derived projection."""
+"""读取权威任务计划及其派生投影视图。"""
 
 from __future__ import annotations
 

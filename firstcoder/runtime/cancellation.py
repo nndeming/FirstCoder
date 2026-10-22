@@ -1,4 +1,4 @@
-"""Cooperative cancellation primitives for agent turns and tool execution."""
+"""代理轮次与工具执行使用的协作式取消基础组件。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 @dataclass(slots=True)
 class CancellationToken:
-    """Small thread-safe cancellation flag shared by UI, loop, and tools."""
+    """界面、循环与工具共享的轻量线程安全取消标记。"""
     # 语义上相当于 Java 的 volatile: 本类只依赖其 "可见性" --
     # 一个线程 cancel() 之后, 其他线程 is_set() 必能读到最新值.
     # 实现上 Event 内部是锁 (比 volatile 重, 还附带原子性与 wait 能力),
@@ -28,7 +28,7 @@ class CancellationToken:
 
 
 class AgentCancelledError(RuntimeError):
-    """Raised when an agent turn is interrupted by the user."""
+    """用户中断代理轮次时抛出的异常。"""
 
     def __init__(self, message: str = "Agent turn was interrupted.") -> None:
         super().__init__(message)
@@ -42,7 +42,7 @@ def current_cancellation_token() -> CancellationToken | None:
 
 
 class cancellation_context:
-    """Temporarily expose a cancellation token to synchronous tool executors."""
+    """临时向同步工具执行器提供取消令牌。"""
 
     def __init__(self, token: CancellationToken | None) -> None:
         self.token = token

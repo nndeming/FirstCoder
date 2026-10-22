@@ -1,1 +1,1 @@
-"""Shared Harbor adapters and local runtime utilities."""
+"""共享的 Harbor 适配器与本地运行辅助功能。"""

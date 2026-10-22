@@ -45,7 +45,7 @@ def safe_read_text(path: Path, *, encoding: str = "utf-8") -> str:
 
 
 def optional_str(value: object) -> str | None:
-    """Normalize empty-ish values to None, otherwise stringify."""
+    """将空值或类似空值的输入归一化为 None，其他值转为字符串。"""
 
     if value in (None, ""):
         return None
@@ -53,7 +53,7 @@ def optional_str(value: object) -> str | None:
 
 
 def display_value(value: object | None, *, empty: str = "-") -> str:
-    """Render a value for UI/share text, mapping empty-ish inputs to a placeholder."""
+    """将值渲染为界面或分享文本；空值或类似空值的输入使用占位符。"""
 
     if value in (None, ""):
         return empty
@@ -61,7 +61,7 @@ def display_value(value: object | None, *, empty: str = "-") -> str:
 
 
 def model_label(provider: str | None, model: str | None, *, empty: str = "-") -> str:
-    """Format provider/model for display."""
+    """格式化模型服务与模型名称，供界面显示。"""
 
     if provider and model:
         return f"{provider}/{model}"
@@ -69,7 +69,7 @@ def model_label(provider: str | None, model: str | None, *, empty: str = "-") ->
 
 
 def ellipsis_truncate(text: str, max_chars: int, *, normalize_ws: bool = False) -> str:
-    """Truncate with trailing ellipsis; optionally collapse whitespace first."""
+    """截断文本并添加省略号，可先合并空白字符。"""
 
     value = " ".join(text.split()) if normalize_ws else text
     if max_chars <= 0:

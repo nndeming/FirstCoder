@@ -1,4 +1,4 @@
-"""Unified task-plan creation and final reconciliation policy tests."""
+"""统一任务计划创建与最终状态核对策略的测试。"""
 
 from __future__ import annotations
 

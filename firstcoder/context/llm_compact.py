@@ -436,8 +436,8 @@ def normalize_coding_handoff(summary: str) -> str:
             current = heading
             continue
         if heading.startswith("##"):
-            # Do not emit an extra heading into a checkpoint whose schema is
-            # deliberately fixed. Keep the model's information as body text.
+            # 检查点的结构是固定的，不要额外输出标题；
+            # 模型提供的信息应保留在正文中。
             line = heading.lstrip("#").strip()
         if current is None:
             preamble.append(line)

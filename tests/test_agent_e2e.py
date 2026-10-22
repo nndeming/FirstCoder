@@ -603,8 +603,8 @@ def test_manual_compact_command_e2e_writes_l4_handoff_when_only_current_plain_di
     compact = _compact_events(store, "sess_manual_compact")[0]
     assert compact.payload["trigger"] == "manual"
     event = compact.payload["event"]
-    # L1-L3 must not route/trim current plain dialogue. It remains for the
-    # semantic L4 checkpoint, rather than becoming the old L3 text preview.
+    # L1–L3 不应对当前普通对话执行路由或裁剪，应将其保留给
+    # L4 语义检查点处理，不能退回旧版 L3 文本预览方式。
     assert event["changed_parts"] == 0
     assert event["replacements"] == []
     checkpoints = _checkpoint_events(store, "sess_manual_compact")

@@ -1,4 +1,4 @@
-"""Pure derived views for canonical task plans."""
+"""根据统一任务计划计算的纯派生视图。"""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ _TERMINAL_STATUSES = frozenset({"completed", "cancelled"})
 
 
 def ordered_tasks(plan: TaskPlan) -> tuple[Task, ...]:
-    """Return tasks in stable display order."""
+    """按稳定的显示顺序返回任务。"""
 
     indexed = enumerate(plan.tasks)
     return tuple(task for _, task in sorted(indexed, key=lambda item: (item[1].order, item[0])))
 
 
 def effective_dependencies(plan: TaskPlan) -> dict[str, tuple[str, ...]]:
-    """Return explicit DAG edges or implicit linear predecessor edges."""
+    """返回显式有向无环图边，或隐式线性前驱边。"""
 
     if plan.mode == "dag":
         return {task.id: task.depends_on for task in plan.tasks}

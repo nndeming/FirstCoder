@@ -1,4 +1,4 @@
-"""Agent-turn result types."""
+"""代理单轮执行的结果类型。"""
 
 from __future__ import annotations
 

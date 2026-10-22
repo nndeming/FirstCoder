@@ -1,4 +1,4 @@
-"""Skill file loading."""
+"""技能文件加载。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from firstcoder.skills.models import LoadedSkill, SkillDefinition
 
 
 class SkillLoadError(ValueError):
-    """A skill could not be loaded safely."""
+    """无法安全加载技能时抛出的异常。"""
 
 
 class SkillLoader:

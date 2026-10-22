@@ -35,7 +35,7 @@ HELP_TEXT = "\n".join(["Commands:", *[f"{command.ljust(48)} {description}" for c
 
 @dataclass(slots=True)
 class HelpCommandHandler:
-    """Render the current TUI slash command surface."""
+    """渲染当前 TUI 支持的斜杠命令。"""
 
     def handle(self, text: str) -> CommandResult:
         """精确匹配 /help 返回静态帮助文本。

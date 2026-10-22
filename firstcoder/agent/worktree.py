@@ -1,18 +1,16 @@
-"""Phase 4 git worktree isolation for mutation-capable background subagents.
+"""第四阶段：为可修改文件的后台子代理提供 Git 工作树隔离。
 
-The manager owns the git plumbing needed to run a mutation-capable subagent
-(role ``coder``) without ever touching the parent working tree.  Each isolated
-job gets its own git worktree plus a dedicated branch under the repository's
-common git dir (``<git-common-dir>/fc-worktrees/<name>``).  Storing worktrees
-under the git dir keeps them out of the parent's ``git status`` and out of the
-sandbox path space that ordinary tools can see.
+管理器负责底层 Git 操作，使编码角色（``coder``）不触碰父会话工作树。
+每个隔离任务使用独立工作树与专用分支，工作树存放在仓库的公共 Git 目录下
+（``<git-common-dir>/fc-worktrees/<name>``）。这样既不会出现在父目录的
+``git status`` 中，也不在普通工具可见的沙箱路径范围内。
 
-Safety rules encoded here (see docs/async-subagents-dag-plan.md, Phase 4):
+本模块落实以下约束，详见 docs/async-subagents-dag-plan.md 第四阶段：
 
-- A worktree can only be created for a real git repository.
-- The parent working tree is never modified by creation or diffing.
-- Removal refuses to discard uncommitted work unless ``force=True``.
-- Nothing here auto-merges or applies the isolated diff back to the parent.
+- 只能为真实 Git 仓库创建工作树。
+- 创建与比较差异均不修改父会话工作树。
+- 除非指定 ``force=True``，否则拒绝删除含未提交改动的工作树。
+- 不自动合并，也不将隔离差异应用到父会话工作树。
 """
 
 from __future__ import annotations
@@ -28,12 +26,12 @@ _DIFF_STAT_LIMIT = 8000
 
 
 class WorktreeError(RuntimeError):
-    """Raised when a git worktree operation cannot be completed safely."""
+    """Git 工作树操作无法安全完成时抛出的异常。"""
 
 
 @dataclass(slots=True)
 class Worktree:
-    """A single isolated worktree owned by the manager."""
+    """由管理器持有的单个隔离工作树。"""
 
     name: str
     path: Path
@@ -43,7 +41,7 @@ class Worktree:
 
 @dataclass(slots=True)
 class WorktreeDiff:
-    """Summary of the uncommitted changes inside an isolated worktree."""
+    """隔离工作树内未提交改动的摘要。"""
 
     stat: str
     files_changed: list[str]
@@ -56,10 +54,10 @@ class WorktreeDiff:
 
 
 def _run_git(cwd: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run a git command with a sanitized environment.
+    """使用经过清理的环境变量运行 Git 命令。
 
-    Reuses ``ExecutionSandbox.build_env`` so secret-bearing environment
-    variables never leak into subprocesses, matching the rest of the codebase.
+    复用 ``ExecutionSandbox.build_env``，防止含密钥的环境变量泄漏到子进程，
+    与项目其他子进程的处理方式保持一致。
     """
 
     env = ExecutionSandbox(cwd).build_env()
@@ -79,7 +77,7 @@ def _run_git(cwd: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def is_git_repo(path: str | Path) -> bool:
-    """Return True when ``path`` lives inside a real git work tree."""
+    """当 ``path`` 位于真实 Git 工作树内时返回 True。"""
 
     root = Path(path)
     if not root.exists():
@@ -89,21 +87,19 @@ def is_git_repo(path: str | Path) -> bool:
 
 
 class WorktreeManager:
-    """Create and tear down isolated git worktrees for background mutation jobs."""
+    """为后台修改任务创建和清理隔离的 Git 工作树。"""
 
     def __init__(self, project_root: str | Path) -> None:
         self.project_root = Path(project_root).resolve()
 
-    # -- discovery --------------------------------------------------------
+    # -- 查找工作树 --------------------------------------------------------
 
     def available(self, *, base_ref: str = "HEAD") -> bool:
-        """Whether isolated worktrees can be created for this project root.
+        """判断当前项目根目录是否支持创建隔离工作树。
 
-        A freshly initialized repository with no commits is technically a git
-        work tree, but ``git worktree add ... HEAD`` cannot succeed until the
-        requested base ref resolves to a commit.  Treat that as unavailable so
-        background coder dispatch can reject up front instead of starting a job
-        that will only fail later.
+        新初始化且没有提交的仓库虽然是 Git 工作树，但只有基础引用能够解析为提交时，
+        ``git worktree add ... HEAD`` 才能成功。将此类仓库视为不可用，
+        便于在派发后台编码任务前直接拒绝，避免启动注定失败的任务。
         """
 
         if not is_git_repo(self.project_root):
@@ -124,14 +120,13 @@ class WorktreeManager:
     def worktrees_root(self) -> Path:
         return self._common_git_dir() / WORKTREE_DIRNAME
 
-    # -- lifecycle --------------------------------------------------------
+    # -- 生命周期 ----------------------------------------------------------
 
     def create(self, name: str, *, base_ref: str = "HEAD") -> Worktree:
-        """Create a fresh worktree + branch for the given job/session name.
+        """为指定任务或会话名创建全新的工作树与分支。
 
-        Raises ``WorktreeError`` when the project is not a git repo, when the
-        target path already exists, or when git refuses the operation.  Creation
-        never mutates the parent working tree, so a dirty parent is fine.
+        项目不是 Git 仓库、目标路径已存在或 Git 拒绝操作时，抛出 ``WorktreeError``。
+        创建过程不修改父会话工作树，因此父目录存在未提交改动也不影响创建。
         """
 
         safe_name = _sanitize_name(name)
@@ -157,11 +152,10 @@ class WorktreeManager:
         return Worktree(name=safe_name, path=target.resolve(), branch=branch, base_ref=base_ref)
 
     def diff(self, worktree: Worktree) -> WorktreeDiff:
-        """Summarize uncommitted changes (including untracked files).
+        """汇总未提交改动，包括未跟踪文件。
 
-        Uses ``git add -A -N`` so newly created files appear in the stat output,
-        then reads ``--stat`` and ``--name-status`` against ``HEAD``.  This only
-        touches the isolated worktree's index, never the parent.
+        先用 ``git add -A -N`` 让新增文件出现在统计中，再读取相对 ``HEAD`` 的
+        ``--stat`` 与 ``--name-status``。仅修改隔离工作树的索引，不触碰父会话。
         """
 
         add_result = _run_git(worktree.path, ["add", "-A", "-N"])
@@ -185,10 +179,10 @@ class WorktreeManager:
         return bool(result.stdout.strip())
 
     def remove(self, worktree: Worktree, *, force: bool = False) -> None:
-        """Remove the worktree.
+        """移除工作树。
 
-        Refuses to discard uncommitted work unless ``force=True``; this mirrors
-        git's own default and prevents silent loss of an isolated coder's output.
+        与 Git 默认行为一致，除非指定 ``force=True``，否则拒绝丢弃未提交改动，
+        防止隔离编码代理的产物被静默删除。
         """
 
         if not force and self.is_dirty(worktree):
@@ -217,6 +211,6 @@ def _parse_name_status(output: str) -> list[str]:
         parts = line.split("\t")
         if len(parts) < 2:
             continue
-        # For renames/copies (R100 old new) the destination path is last.
+        # 对重命名或复制记录（R100 old new），最后一项是目标路径。
         files.append(parts[-1])
     return files

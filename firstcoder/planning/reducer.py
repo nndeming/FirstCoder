@@ -1,4 +1,4 @@
-"""Pure, atomic reducers for incremental task-plan commands."""
+"""处理增量任务计划命令的纯函数式原子状态变换。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ _VALID_MODES = frozenset({"linear", "dag"})
 
 @dataclass(frozen=True, slots=True)
 class Unset:
-    """Sentinel type used when a nullable field was not supplied."""
+    """表示调用方未提供某个可空字段的哨兵类型。"""
 
 
 UNSET = Unset()
@@ -49,11 +49,11 @@ class ReductionResult:
 
 
 class TaskPlanCommandError(ValueError):
-    """Raised when an incremental task-plan command is invalid."""
+    """增量任务计划命令无效时抛出的异常。"""
 
 
 class TaskPlanRevisionConflict(TaskPlanCommandError):
-    """Raised when a command was based on an outdated plan revision."""
+    """命令基于过期的计划版本时抛出的异常。"""
 
     def __init__(self, expected: int, actual: int) -> None:
         self.expected = expected
@@ -69,7 +69,7 @@ def create_tasks(
     tasks: object,
     start_new_plan: bool = False,
 ) -> ReductionResult:
-    """Create the first plan or append new tasks to the current plan."""
+    """创建首个计划，或向当前计划追加新任务。"""
 
     actual_revision = current_plan.revision if current_plan is not None else 0
     _require_revision(expected_revision, actual_revision)
@@ -120,7 +120,7 @@ def update_tasks(
     expected_revision: int,
     updates: object,
 ) -> ReductionResult:
-    """Atomically update task status, owner, and dependency edges by ID."""
+    """按 ID 原子更新任务状态、负责人和依赖边。"""
 
     _require_revision(expected_revision, plan.revision)
     raw_updates = _require_list(updates, field="updates")
@@ -174,7 +174,7 @@ def revise_tasks(
     expected_revision: int,
     revisions: object,
 ) -> ReductionResult:
-    """Atomically revise task content by ID."""
+    """按 ID 原子修订任务内容。"""
 
     _require_revision(expected_revision, plan.revision)
     raw_revisions = _require_list(revisions, field="revisions")

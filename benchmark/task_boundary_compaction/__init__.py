@@ -1,1 +1,1 @@
-"""Task-boundary compaction benchmark support code."""
+"""任务边界压缩基准测试的支持代码。"""

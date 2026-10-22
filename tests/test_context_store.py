@@ -340,9 +340,9 @@ def test_store_rejects_semantically_invalid_task_plan_snapshot(tmp_path: Path) -
 @pytest.mark.parametrize(
     ("second_previous", "second_revision"),
     [
-        (0, 1),  # duplicate/stale event
-        (2, 3),  # gap after revision 1
-        (1, 1),  # non-increasing revision
+        (0, 1),  # 重复或过期的事件
+        (2, 3),  # 版本 1 之后出现版本缺口
+        (1, 1),  # 版本号未递增
     ],
 )
 def test_store_rejects_non_contiguous_task_plan_event_chain(

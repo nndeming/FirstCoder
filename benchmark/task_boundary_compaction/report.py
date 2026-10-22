@@ -1,4 +1,4 @@
-"""Aggregate raw task-boundary trial results without hiding invalid trials."""
+"""汇总任务边界试验原始结果，不隐藏无效试验。"""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ _EXCLUDED_STATUSES = frozenset(
 
 
 def build_report(results: Iterable[TrialResult], *, output_dir: str | Path) -> dict[str, object]:
-    """Write JSON/Markdown summaries while retaining all raw trial statuses."""
+    """写入 JSON 与 Markdown 摘要，同时保留全部原始试验状态。"""
 
     result_list = list(results)
     summary = {
@@ -40,7 +40,7 @@ def build_report(results: Iterable[TrialResult], *, output_dir: str | Path) -> d
 
 
 def load_results(input_dir: str | Path) -> list[TrialResult]:
-    """Read recursively written raw result files, excluding derived summaries."""
+    """递归读取原始结果文件，排除派生摘要。"""
 
     return [
         TrialResult.from_dict(json.loads(path.read_text(encoding="utf-8")))

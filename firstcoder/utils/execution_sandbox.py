@@ -1,4 +1,4 @@
-"""Execution sandbox for local subprocess tools."""
+"""本地子进程工具使用的执行沙箱。"""
 
 from __future__ import annotations
 
@@ -16,10 +16,10 @@ _SENSITIVE_ENV_KEYWORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "COOKIE", "PASS
 
 
 class ExecutionSandbox:
-    """Small subprocess boundary layered above PathSandbox.
+    """在 PathSandbox 之上添加的轻量子进程边界。
 
-    This is intentionally not a policy engine. PermissionManager decides whether
-    a command may run; this class constrains how approved subprocesses run.
+    PermissionManager 决定命令是否可以运行，本类仅约束已批准子进程的运行方式，
+    不承担权限策略判断。
     """
 
     def __init__(self, root: str | Path, *, access: SandboxAccess | None = None) -> None:

@@ -1,4 +1,4 @@
-"""Multimodal user input: attachments, projection, and provider encoding."""
+"""多模态用户输入测试：附件、投影视图与模型服务编码。"""
 
 from __future__ import annotations
 

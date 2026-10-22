@@ -158,8 +158,8 @@ def render_skill_catalog(catalog: SkillCatalog) -> str:
 
     footer = SKILL_LOAD_INSTRUCTION
     name_lines = [f"- {skill.name}:" for skill in skills]
-    # Every normal row has one separator space before its description. Reserve
-    # those spaces even when the description later becomes empty.
+    # 普通行在说明前都有一个分隔空格；即使说明稍后变为空，
+    # 也应预留这些空格。
     fixed_cost = _joined_length([*name_lines, footer]) + len(skills)
     if fixed_cost > SKILL_CATALOG_MAX_CHARS:
         return _render_name_only_prefix(name_lines)
@@ -558,8 +558,8 @@ git commit -m "Wire MCP search into default tools"
 
 ```python
 def test_agent_loop_exposes_only_searched_mcp_schemas_for_current_turn(tmp_path) -> None:
-    # tools: mcp__github__get_issue, mcp__github__create_issue, mcp_tool_search
-    # provider responses: search -> get_issue -> final text
+    # 工具：mcp__github__get_issue、mcp__github__create_issue、mcp_tool_search
+    # 模型响应顺序：搜索 -> 获取议题 -> 最终文本
     result = AgentLoop(session=session, provider=provider, tools=tools).run_user_turn(
         "Read issue 12"
     )

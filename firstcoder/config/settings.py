@@ -41,7 +41,7 @@ class AppConfig:
     def get_env(self, name: str, default: str | None = None) -> str | None:
         """读取配置中的环境变量值。
 
-        Provider secrets are resolved by an explicit Catalog profile.
+        模型服务密钥由显式指定的 Catalog 配置解析。
         """
 
         return self.env.get(name, default)

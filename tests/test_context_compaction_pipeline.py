@@ -248,8 +248,8 @@ def test_l1_skips_current_task_content(tmp_path: Path) -> None:
 
     old_part = result.view.messages[0].parts[0]
     current_part = result.view.messages[1].parts[0]
-    # The second message is the latest user message and must be retained.  A
-    # normal AUTO L1 pass only trims sufficiently old cross-task dialogue.
+    # 第二条消息是最近的用户消息，必须保留；普通 AUTO 模式下，
+    # L1 仅裁剪足够久远且属于其他任务的对话。
     assert old_part.metadata["compaction_state"] == "trimmed"
     assert old_part.metadata["compacted_by"] == "l1_old_task_dialogue"
     assert old_part.content == ""
@@ -1221,7 +1221,7 @@ def test_required_l3_runs_below_budget_and_repeat_is_idempotent(tmp_path: Path) 
 
 
 def test_task_switch_compaction_saves_context_without_breaking_tool_transaction(tmp_path: Path) -> None:
-    """A task switch must release old dialogue/output while retaining legal calls."""
+    """任务切换必须释放旧对话与输出，同时保留合法的工具调用序列。"""
 
     old_dialogue = "old-task discussion that is no longer actionable\n" * 240
     old_search_output = "\n".join(f"firstcoder/old_module.py:{line}: obsolete_symbol_{line}" for line in range(1, 500))

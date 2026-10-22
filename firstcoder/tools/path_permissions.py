@@ -1,4 +1,4 @@
-"""Shared permission helpers for path-reading tools."""
+"""路径读取工具共用的权限辅助功能。"""
 
 from __future__ import annotations
 

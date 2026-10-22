@@ -25,7 +25,7 @@ After this document, you should be able to:
 3. Trace one user turn from CLI/TUI into durable JSONL facts and back to UI.
 4. Decide whether a change belongs in `AgentLoop`, `ContextWindowManager`,
    a tool executor, a provider adapter, or a slash-command handler.
-5. Name the single assembly path for create / resume / fork sessions.
+5. Name the 唯一组装路径 for create / resume / fork sessions.
 
 ---
 
@@ -474,19 +474,19 @@ Is it a shared cancel or user-input DTO needed by tools/permissions?
 ## 13. How to Verify Architecture Claims
 
 ```sh
-# dependency intent: tools/permissions/utils should not import agent
+# 依赖约束：tools、permissions 与 utils 不应导入 agent
 rg -n "from firstcoder\.agent|import firstcoder\.agent" firstcoder/tools firstcoder/permissions firstcoder/utils
 
-# single assembly path
+# 唯一组装路径
 rg -n "SessionBootstrap" firstcoder tests
 
-# ports surface
+# 协议接口范围
 rg -n "ChatRunnerLike|CommandHandlerLike|ContextManagerLike" firstcoder tests
 
-# hidden tools single list
+# 隐藏工具的统一清单
 rg -n "HIDDEN_TOOL_STATUS_NAMES" firstcoder tests
 
-# focused suite often used after architecture edits
+# 架构修改后常用的专项测试
 .venv/bin/python -m pytest \
   tests/test_app_tui.py tests/test_session_*.py \
   tests/test_app_factory.py tests/test_app_runtime.py \

@@ -1,7 +1,7 @@
-"""Hidden LLM task-boundary classification for AgentLoop.
+"""AgentLoop 使用的隐藏模型任务边界分类。
 
-This is separate from firstcoder.context.task_boundary, which owns hash/state
-transitions after a decision exists.
+本模块负责分类；firstcoder.context.task_boundary 则负责决策确定后的
+哈希计算与状态转换。
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def parse_task_boundary_classification(content: str, *, basis_message_id: str) -
 
 
 class TaskBoundaryClassifier:
-    """Run hidden classification calls and record results into session state."""
+    """调用隐藏分类器，并将结果记录到会话状态中。"""
 
     def __init__(
         self,

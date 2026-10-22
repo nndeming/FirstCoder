@@ -42,11 +42,10 @@ def compact_old_task_part(part: MessagePart) -> MessagePart:
 
 
 class PlainTextRouteCompressor:
-    """派生工具输出的确定性 fallback compressor。
+    """工具派生输出的确定性兜底压缩器。
 
-    专用 search、diff、build、json、code、html compressor 不适用时，保留首尾和
-    明确的 token 元数据。它只由 L2 的 tool-result 路由调用，不能用于普通对话或
-    fresh source read。
+    专用搜索、差异、构建、JSON、代码及 HTML 压缩器不适用时，保留首尾内容和
+    明确的词元元数据。仅供 L2 的工具结果路由调用，不用于普通对话或新读取的源文件。
     """
 
     def compact(self, part: MessagePart, context: RouteContext) -> RouteCompactResult | None:

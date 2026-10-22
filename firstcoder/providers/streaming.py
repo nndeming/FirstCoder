@@ -1,4 +1,4 @@
-"""Shared helpers for adapting synchronous provider streams to async consumers."""
+"""将同步模型输出流适配给异步消费者的共享辅助功能。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from firstcoder.utils.json_utils import loads_json_object
 
 
 def read_field(value: Any, name: str, default: Any = None) -> Any:
-    """Read a field from either an SDK object or a test-friendly dictionary."""
+    """从 SDK 对象或便于测试的字典中读取字段。"""
 
     if isinstance(value, dict):
         return value.get(name, default)
@@ -87,8 +87,8 @@ def close_stream(stream: Any) -> None:
         try:
             close()
         except Exception:
-            # Closing a cancelled stream is best effort; it must not prevent
-            # the worker from publishing its terminal sentinel.
+            # 取消后尽力关闭流，但关闭失败不能阻止
+            # 工作线程发送表示结束的哨兵值。
             pass
 
 
@@ -97,7 +97,7 @@ def start_sync_stream_worker(
     *,
     thread_name: str,
 ) -> tuple[queue.Queue[Any], Callable[[], None]]:
-    """Read one synchronous iterator in a dedicated thread and expose a queue."""
+    """在专用线程中读取同步迭代器，并通过队列提供结果。"""
 
     stream_queue: queue.Queue[Any] = queue.Queue()
     stop_event = threading.Event()

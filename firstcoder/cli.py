@@ -1,4 +1,4 @@
-"""Command-line entry point for single-turn FirstCoder runs."""
+"""FirstCoder 单轮运行的命令行入口。"""
 
 from __future__ import annotations
 from firstcoder.app.ports import ChatRunnerLike
@@ -39,7 +39,7 @@ CliRunner = Callable[[CliConfig], str]
 
 
 def read_message(message: str | None, *, stdin_text: str | None = None) -> str:
-    """Return a user message from an argument or stdin."""
+    """从参数或标准输入中获取用户消息。"""
 
     if message is not None:
         return message.strip()
@@ -242,7 +242,7 @@ def run_single_turn(config: CliConfig) -> str:
 
 
 def run_benchmark_turn(config: CliConfig) -> str:
-    """Run Harbor's non-interactive turn with benchmark-safe session settings."""
+    """使用适合基准测试的会话设置，运行 Harbor 非交互轮次。"""
 
     app = create_cli_app(config)
     assert app.current_session is not None

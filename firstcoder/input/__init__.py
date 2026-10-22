@@ -1,4 +1,4 @@
-"""User-facing multimodal input helpers (attachments, clipboard, paste parsing)."""
+"""面向用户的多模态输入辅助功能，包括附件、剪贴板与粘贴解析。"""
 
 from firstcoder.input.attachments import (
     PreparedAttachment,

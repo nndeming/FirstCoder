@@ -1,4 +1,4 @@
-"""Private capture and replay primitives for real task-A benchmark context."""
+"""真实任务 A 基准上下文的私有捕获与重放基础功能。"""
 
 from __future__ import annotations
 
@@ -14,11 +14,10 @@ def clone_recorded_session(
     destination_data_root: str | Path,
     session_id: str,
 ) -> JsonlSessionStore:
-    """Copy one captured session store for an isolated task-B trial.
+    """复制已捕获的会话存储，用于隔离的任务 B 试验。
 
-    The caller owns both directories and must remove them after the trial.  Only
-    session data is copied: a task-A project is deliberately never accepted or
-    transferred by this function.
+    调用方管理两个目录，并负责在试验结束后删除它们。此函数只复制会话数据，
+    不接受也不转移任务 A 的项目目录。
     """
 
     source = Path(source_data_root)

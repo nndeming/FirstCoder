@@ -72,7 +72,7 @@ class ProviderDiagnostics:
 
 @dataclass(slots=True)
 class ContentPart:
-    """Provider-agnostic rich content within one chat message."""
+    """单条聊天消息中的富内容，不依赖具体模型服务。"""
 
     type: Literal["text", "image"]
     text: str | None = None
@@ -135,7 +135,7 @@ ToolChoice = ToolChoiceMode | ToolChoiceFunction
 
 @dataclass(frozen=True, slots=True)
 class MainRequestOptions:
-    """Options applied only to the main agent model requests."""
+    """仅应用于主代理模型请求的选项。"""
 
     temperature: float | None = None
     max_tokens: int | None = None

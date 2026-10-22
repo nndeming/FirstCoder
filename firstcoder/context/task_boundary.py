@@ -233,7 +233,7 @@ class TaskBoundaryService:
         basis_message_id: str,
         confirmation_reason: str = "implicit_initial_task",
     ) -> TaskBoundaryObservation | None:
-        """Initialize the first active task without relying on model tool use."""
+        """初始化首个活动任务，不依赖模型调用工具。"""
 
         if state.active_task_hash is not None:
             return None

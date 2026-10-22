@@ -1,4 +1,4 @@
-"""OS clipboard helpers for multimodal paste."""
+"""多模态粘贴所需的系统剪贴板辅助功能。"""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from pathlib import Path
 
 
 def read_clipboard_image_bytes() -> bytes | None:
-    """Return image bytes from the system clipboard when available.
+    """系统剪贴板中有图片时，返回其字节数据。
 
-    Supports macOS, Linux clipboard tools, and Windows PowerShell.
-    Returns None when the clipboard has no image or the platform is unsupported.
+    支持 macOS、Linux 剪贴板工具与 Windows PowerShell。
+    剪贴板没有图片或平台不受支持时，返回 None。
     """
 
     system = platform.system()
@@ -72,7 +72,7 @@ def _read_windows_clipboard_image() -> bytes | None:
 def _read_macos_clipboard_image() -> bytes | None:
     with tempfile.TemporaryDirectory(prefix="firstcoder-clipboard-") as tmp:
         out_path = Path(tmp) / "clipboard.png"
-        # Prefer PNG; fall back to TIFF and convert via sips when needed.
+        # 优先使用 PNG；必要时回退到 TIFF，并通过 sips 转换。
         script = f"""
         set outPath to "{out_path.as_posix()}"
         try
@@ -132,6 +132,6 @@ def _read_macos_clipboard_image() -> bytes | None:
                 return None
             if convert.returncode == 0 and converted.exists() and converted.stat().st_size > 0:
                 return converted.read_bytes()
-            # Last resort: return raw TIFF bytes (providers usually reject TIFF).
+            # 最后尝试返回原始 TIFF 字节；模型服务通常不接受 TIFF。
             return None
         return None

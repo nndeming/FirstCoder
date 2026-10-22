@@ -205,7 +205,7 @@ class AgentLoop:
         attachments: list[UserAttachment] | None = None,
         streaming: bool = False,
     ) -> AgentTurnResult:
-        """Execute one turn through the single asynchronous AgentTurnResult API."""
+        """通过统一的异步 AgentTurnResult 接口执行一轮对话。"""
 
         if streaming:
             return await self._run_user_turn_streaming(content, attachments=attachments)
@@ -220,7 +220,7 @@ class AgentLoop:
         *,
         streaming: bool = False,
     ) -> AgentTurnResult:
-        """Resume a paused turn through the single asynchronous result API."""
+        """通过统一的异步结果接口恢复暂停的对话轮次。"""
 
         if streaming:
             return await self._resume_with_user_input_streaming(request_id, answer)
@@ -229,7 +229,7 @@ class AgentLoop:
         )
 
     def replace_cancellation_token(self, token: CancellationToken | None) -> None:
-        """Rebind cooperative cancellation when a paused turn resumes in the runner."""
+        """执行器恢复暂停的轮次时，重新绑定协作式取消信号。"""
 
         self.cancellation_token = token
         self.tool_executor.cancellation_token = token
@@ -252,7 +252,7 @@ class AgentLoop:
         *,
         attachments: list[UserAttachment] | None = None,
     ) -> AgentTurnResult:
-        """Synchronous implementation kept private behind ``run_user_turn``."""
+        """仅供内部使用的同步实现，由 ``run_user_turn`` 对外封装。"""
 
         try:
             return self._run_user_turn_sync_impl(content, attachments=attachments)
@@ -1634,7 +1634,7 @@ class AgentLoop:
         )
 
     def _ensure_background_control_tools(self) -> None:
-        """Register background_status/background_cancel whenever background runtime exists."""
+        """只要后台运行环境存在，就注册 background_status 和 background_cancel。"""
 
         if self.background_manager is None:
             return
@@ -1645,7 +1645,7 @@ class AgentLoop:
             self.session.tool_registry.register(create_background_cancel_tool(self.background_manager, session_id=self.session.session_id))
 
     def _ensure_delegate_tool(self) -> None:
-        """Register the parent-facing delegate tool with a non-recursive child runner."""
+        """注册供父会话调用的委派工具，并使用不允许递归委派的子代理执行器。"""
 
         if not self.enable_delegate_tool:
             return
