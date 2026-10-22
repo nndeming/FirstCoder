@@ -1,7 +1,7 @@
 """用户可见 session 能力的边界模块。
 
 `firstcoder.context` 仍然负责底层事件日志、上下文投影、checkpoint 和压缩；
-本包后续只承载 catalog、resume 编排、只读 transcript 和 share export 等用户入口。
+本包承载会话目录、创建/恢复/分叉编排，以及 transcript 和 share export 等用户入口。
 """
 
 from firstcoder.session.errors import (

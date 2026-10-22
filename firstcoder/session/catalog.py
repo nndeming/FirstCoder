@@ -41,7 +41,7 @@ class SessionCatalog:
     """用户可见 session 列表服务。
 
     `root` 是 `.firstcoder` 数据根目录，也就是 `JsonlSessionStore(root)` 使用的同一个
-    root。第一版按需扫描 JSONL；后续如果扫描变慢，可以在本层增加索引。
+    root。列表查询使用可重建的 SessionIndex；查看单个会话时直接从 JSONL 派生摘要。
     """
 
     def __init__(self, root: str | Path) -> None:

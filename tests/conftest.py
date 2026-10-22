@@ -1,7 +1,7 @@
-"""pytest 公共配置。
+"""pytest 公共 fixture。
 
-当前工作区只保留 provider、tool、config 和 utils 的可运行骨架。
-旧 agent/memory/context 实现已经删除，后续按新计划重新实现时再补对应测试。
+cassette_provider 创建可录制或回放模型交互的 provider，并在测试结束后关闭它。
+默认使用 tests/fixtures/cassettes 下的记录，避免测试依赖真实模型请求。
 """
 
 from __future__ import annotations

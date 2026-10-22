@@ -389,6 +389,64 @@ def test_agent_chat_runner_exposes_pending_user_input(tmp_path) -> None:
     assert runner._active_cancellation_token is None
 
 
+@pytest.mark.parametrize("streaming", [False, True], ids=["complete", "stream"])
+@pytest.mark.parametrize("synchronous_entry", [False, True], ids=["async-entry", "sync-entry"])
+def test_chat_runner_entries_preserve_permission_resume_state(tmp_path, streaming, synchronous_entry) -> None:
+    """CLI 与 TUI 两种入口都要沿用暂停的 loop，并完整记录一次写入。"""
+
+    session = AgentSession.from_project(
+        store=JsonlSessionStore(tmp_path / ".firstcoder"),
+        session_id="sess_runner_entry_parity",
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path)],
+    )
+    responses = [
+        ChatResponse(
+            provider="fake", model="fake-model", content="",
+            tool_calls=[ToolCall(id="write_once", name="write", arguments={"path": "result.txt", "content": "done"})],
+            finish_reason="tool_calls",
+        ),
+        ChatResponse(provider="fake", model="fake-model", content="finished"),
+    ]
+    provider = FakeStreamingProvider(responses) if streaming else FakeProvider(responses)
+    tool_events = []
+    stream_events = []
+    runner = AgentChatRunner(
+        current_session=CurrentSessionState(session), provider=provider,
+        use_streaming=streaming, tool_event_handler=tool_events.append,
+        stream_event_handler=stream_events.append,
+    )
+
+    if synchronous_entry:
+        waiting = runner.run_user_turn("write a file")
+    else:
+        waiting = asyncio.run(runner.arun_user_turn("write a file"))
+    assert waiting.finish_reason == AgentTurnStatus.WAITING_FOR_USER_INPUT.value
+    assert runner.last_pending_input is not None
+    assert runner._active_cancellation_token is None
+    assert not (tmp_path / "result.txt").exists()
+    original_loop = runner.loops[-1]
+    request_id = runner.last_pending_input.id
+
+    if synchronous_entry:
+        response = runner.resume_with_user_input(request_id, "allow_once")
+    else:
+        response = asyncio.run(runner.aresume_with_user_input(request_id, "allow_once"))
+
+    assert response.content == "finished"
+    assert (tmp_path / "result.txt").read_text(encoding="utf-8") == "done"
+    assert len(runner.loops) == 1
+    assert runner.loops[-1] is original_loop
+    assert runner.last_pending_input is None
+    assert runner._pending_permission_loop is None
+    assert runner._active_cancellation_token is None
+    assert len(provider.requests) == 2
+    assert [event.kind for event in tool_events] == ["permission_requested", "started", "finished"]
+    assert bool(stream_events) is streaming
+    assert runner.last_display_lines == ["Tool result: write success: 已写入文件：result.txt", "finished"]
+    assert [message.role for message in session.rebuild_view().messages] == ["user", "assistant", "tool", "assistant"]
+
+
 def test_agent_chat_runner_can_resume_permission_confirmation(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path / ".firstcoder")
     session = AgentSession.from_project(

@@ -1,4 +1,9 @@
-"""Agent 主循环最小闭环。"""
+"""协调一轮对话：记录输入 → 请求模型 → 执行工具 → 返回或暂停。
+
+第一次阅读从 run_user_turn 开始，再看 _run_user_turn_sync_impl 和
+_continue_tool_loop_from_response。流式路径保留相同的步骤，只在模型请求和
+工具调度处使用 await。权限确认后的具体执行由 ToolExecutor 负责。
+"""
 
 from __future__ import annotations
 
@@ -39,15 +44,10 @@ from firstcoder.context.manager import ContextCompactRequest, ContextWindowTrigg
 from firstcoder.context.token_budget import ContextBudget, build_context_budget
 from firstcoder.context.task_boundary import TaskBoundaryService
 from firstcoder.input.attachments import UserAttachment
-from firstcoder.permissions.types import PermissionDecision, PermissionDecisionKind, PermissionRequest
+from firstcoder.permissions.types import PermissionRequest
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
 from firstcoder.providers.types import ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, FinishReason, MainRequestOptions, ToolCall
-from firstcoder.tools.permission_results import (
-    make_permission_denied_result,
-    make_prewrite_review_failed_result,
-    make_prewrite_review_stale_result,
-)
 from firstcoder.tools.background import create_background_cancel_tool, create_background_status_tool
 from firstcoder.agent.subagent import SubagentRunner
 from firstcoder.tools.delegate import create_delegate_tool
@@ -80,6 +80,8 @@ class AgentLoop:
     这里故意不把具体工具、OpenAI SDK chunk、Textual widget 混进来。AgentLoop 只协调
     “模型想做什么”和“会话事实应该怎样落库”，具体协议转换交给 provider/context 层。
     """
+
+    # 运行时装配；第一次阅读可以直接跳到下面的 run_user_turn。
 
     def __init__(
         self,
@@ -194,6 +196,8 @@ class AgentLoop:
         self._ensure_background_control_tools()
         self._ensure_delegate_tool()
 
+    # 对外入口：开始一轮、恢复一轮，以及运行中的状态更新。
+
     async def run_user_turn(
         self,
         content: str,
@@ -209,6 +213,21 @@ class AgentLoop:
             lambda: self._run_user_turn_sync(content, attachments=attachments)
         )
 
+    async def resume_with_user_input(
+        self,
+        request_id: str,
+        answer: str,
+        *,
+        streaming: bool = False,
+    ) -> AgentTurnResult:
+        """Resume a paused turn through the single asynchronous result API."""
+
+        if streaming:
+            return await self._resume_with_user_input_streaming(request_id, answer)
+        return await anyio.to_thread.run_sync(
+            lambda: self._resume_with_user_input_sync(request_id, answer)
+        )
+
     def replace_cancellation_token(self, token: CancellationToken | None) -> None:
         """Rebind cooperative cancellation when a paused turn resumes in the runner."""
 
@@ -218,22 +237,14 @@ class AgentLoop:
     def clear_stream_events(self) -> None:
         self.last_stream_events = []
 
-    def _validate_attachments(self, attachments: list[UserAttachment] | None) -> None:
-        """在消息落库前确认 provider 能消费本轮附件。
-
-        文件附件可以继续以内联文本或路径引用进入上下文；图片则必须由当前模型显式声明
-        视觉能力，避免 provider 静默忽略图片后让 agent 在错误前提下执行任务。
-        """
-
-        if not attachments or not any(item.kind == "image" for item in attachments):
-            return
-        capabilities = getattr(self.provider, "capabilities", None)
-        if bool(getattr(capabilities, "supports_vision", False)):
-            return
-        raise ValueError(
-            f"模型 {self.provider.name}/{self.provider.model} 未声明视觉能力，"
-            "无法发送图片附件；请在对应 [models] 配置中设置 vision = true。"
+    def context_budget_for_view(self, view) -> ContextBudget:
+        return self._context_budget_for_view(
+            view,
+            runtime_instruction=None,
+            definitions=self._provider_tool_definitions(),
         )
+
+    # 开始一轮：先读同步路径，流式路径按相同顺序组织。
 
     def _run_user_turn_sync(
         self,
@@ -282,95 +293,6 @@ class AgentLoop:
         return self._run_tool_loop_interactive(
             self._complete_once_with_recovery,
         )
-
-    async def resume_with_user_input(
-        self,
-        request_id: str,
-        answer: str,
-        *,
-        streaming: bool = False,
-    ) -> AgentTurnResult:
-        """Resume a paused turn through the single asynchronous result API."""
-
-        if streaming:
-            return await self._resume_with_user_input_streaming(request_id, answer)
-        return await anyio.to_thread.run_sync(
-            lambda: self._resume_with_user_input_sync(request_id, answer)
-        )
-
-    def _resume_with_user_input_sync(self, request_id: str, answer: str) -> AgentTurnResult:
-        """用用户回答恢复一个暂停中的权限确认, 然后继续工具循环。
-
-        为什么需要专门通道: 暂停时模型的 tool_call 已经落库, 但还没有配对的
-        tool_result, 历史处于悬空状态; 而 provider API 要求 assistant(tool_calls)
-        后面必须紧跟每个 tool_call_id 对应的 tool_result。如果像普通 ask_user 那样
-        把用户的"同意/拒绝"当成下一条 user 消息直接追加, 序列就不合法, API 会拒绝。
-
-        所以这里做的是"补洞": 按 request_id 从 session 找到 pending 的原始 tool_call
-        (不信 UI 回传参数), 根据回答补齐最终 tool_result (拒绝则造拒绝结果, 同意则
-        真正执行), 落库闭合历史后, 再进入工具循环继续问模型。
-        """
-
-        try:
-            return self._resume_with_user_input_sync_impl(request_id, answer)
-        except BaseException as exc:
-            self._persist_errored_turn(exc)
-            raise
-
-    def _resume_with_user_input_sync_impl(self, request_id: str, answer: str) -> AgentTurnResult:
-        # 恢复不算新一轮对话: 只有 pending 匹配时才重置计时器, 且不清空护栏计数,
-        # 让这次恢复仍然占用原来那一轮的预算 (详见 _begin_turn)
-        pending = self.session.pending_permission_execution
-        if pending is not None and pending.request_id == request_id:
-            self._begin_turn(new_user_turn=False)
-        try:
-            self._check_turn_timeout()
-            self._check_cancelled()
-        except _AgentLoopLimitReached as exc:
-            return self._complete_turn(self._limit_response(exc.reason))
-        except AgentCancelledError:
-            return self._complete_turn(self._interrupted_response())
-        # 核心一步: 按回答补齐悬空的 tool_result (拒绝则造拒绝结果, 同意则执行原始
-        # tool_call), 落库闭合历史. 返回非 None 说明 pending 不存在等异常, 直接收尾
-        result = self._append_permission_resume_result(request_id, answer)
-        if result is not None:
-            return result
-        # 权限悬空已由上面补齐; 这里再对账一遍, 修复取消/崩溃留下的其他悬空 tool_call
-        self._repair_interrupted_tool_calls_before_provider_request()
-        self._check_cancelled()
-        # 历史合法后重新进入工具循环, 带着补全的 tool_result 继续问模型
-        return self._run_tool_loop_interactive(self._complete_once_with_recovery)
-
-    async def _resume_with_user_input_streaming(self, request_id: str, answer: str) -> AgentTurnResult:
-        """流式模式下恢复权限确认，并继续消费 provider stream。"""
-
-        try:
-            return await self._resume_with_user_input_streaming_impl(request_id, answer)
-        except BaseException as exc:
-            self._persist_errored_turn(exc)
-            raise
-
-    async def _resume_with_user_input_streaming_impl(self, request_id: str, answer: str) -> AgentTurnResult:
-        """同步路径 (_resume_with_user_input_sync_impl) 的流式镜像, 步骤一一对应:
-
-        恢复计时 (不算新一轮) -> 超时/取消检查 -> 补洞落库 -> 进流式工具循环。
-        """
-
-        pending = self.session.pending_permission_execution
-        if pending is not None and pending.request_id == request_id:
-            self._begin_turn(new_user_turn=False)
-        try:
-            self._check_turn_timeout()
-            self._check_cancelled()
-        except _AgentLoopLimitReached as exc:
-            return self._complete_turn(self._limit_response(exc.reason))
-        except AgentCancelledError:
-            return self._complete_turn(self._interrupted_response())
-        result = await self._append_permission_resume_result_async(request_id, answer)
-        if result is not None:
-            return result
-        self._check_cancelled()
-        return await self._run_tool_loop_interactive_async(self._stream_once_with_recovery)
 
     async def _run_user_turn_streaming(
         self,
@@ -423,413 +345,7 @@ class AgentLoop:
         )
         return result
 
-    def _initialize_active_task_if_missing(self, basis_message_id: str):
-        """若尚无进行中的任务, 则以该用户消息为起点自动建立首个任务。\n\n
-        * 任务: 一段目标一致的连续对话
-        """
-        service = TaskBoundaryService(known_message_ids=self.session.known_message_ids)
-        observation = service.initialize_active_task(self.session.runtime_state, basis_message_id=basis_message_id)
-        if observation is not None:
-            self.session.writer.append_task_boundary_observation(observation)
-            self._tag_message_parts_with_task_hash(basis_message_id, observation.active_task_hash)
-        return observation
-
-    def _classify_task_boundary(self, basis_message_id: str) -> None:
-        """发起隐藏的分类调用, 判断该消息是否开启新任务, 并将结果记入任务边界状态机。"""
-
-        self.task_boundary_classifier.classify(basis_message_id)
-
-    async def _classify_task_boundary_async(self, basis_message_id: str) -> None:
-        await self.task_boundary_classifier.classify_async(basis_message_id)
-
-    def _tag_message_parts_with_task_hash(self, message_id: str, task_hash: str | None) -> None:
-        if not task_hash:
-            return
-        view = self.session.rebuild_view()
-        message = next((message for message in view.messages if message.id == message_id), None)
-        if message is None:
-            return
-        for part in message.parts:
-            self.session.writer.append_message_part_metadata_updated(
-                message_id=message_id,
-                part_id=part.id,
-                metadata={"task_hash": task_hash},
-            )
-
-    def _tag_task_boundary_messages_with_active_hash(self, data: dict[str, object]) -> None:
-        active_hash = data.get("active_task_hash")
-        message_ids = {
-            str(data.get("basis_message_id") or ""),
-            str(data.get("candidate_basis_message_id") or ""),
-        }
-        for message_id in message_ids:
-            if message_id:
-                self._tag_message_parts_with_task_hash(
-                    message_id,
-                    active_hash if isinstance(active_hash, str) else None,
-                )
-
-    def _append_permission_resume_result(self, request_id: str, answer: str) -> AgentTurnResult | None:
-        """补洞主流程: 校验 pending -> 按回答得到 tool_result -> 落库收尾。
-
-        返回 None 表示悬空 tool_call 已闭合, 调用方应继续工具循环; 返回
-        AgentTurnResult 表示前置校验失败 (无匹配 pending / 无权限管理器),
-        直接作为本轮结果返回。
-        """
-
-        pending = self._pending_permission_for_resume(request_id)
-        if isinstance(pending, AgentTurnResult):
-            return pending
-        # 被拦下的路径 (拒绝 / 预览失效) 在这里直接得到合成 tool_result, 不会执行工具
-        result = self._prepare_permission_resume(pending, answer)
-        if result is None:
-            # 放行: 真正执行 session 保存的原始 tool_call, 拿到真实结果
-            result = self._execute_resumed_permission_tool_call(pending)
-            self._emit_finished_permission_resume(pending, result)
-        self._finish_permission_resume(pending, result)
-        return None
-
-    async def _append_permission_resume_result_async(self, request_id: str, answer: str) -> AgentTurnResult | None:
-        """同步版的异步镜像: 步骤完全一致, 仅把工具执行丢到线程里避免阻塞事件循环。"""
-
-        pending = self._pending_permission_for_resume(request_id)
-        if isinstance(pending, AgentTurnResult):
-            return pending
-        result = self._prepare_permission_resume(pending, answer)
-        if result is None:
-            result = await anyio.to_thread.run_sync(self._execute_resumed_permission_tool_call, pending)
-            self._emit_finished_permission_resume(pending, result)
-        self._finish_permission_resume(pending, result)
-        return None
-
-    def _pending_permission_for_resume(
-        self,
-        request_id: str,
-    ) -> PendingPermissionExecution | AgentTurnResult:
-        """按 request_id 在 session 运行期状态里找待恢复的 pending。
-
-        找不到 (或不匹配, 比如 UI 拿过期 id 重放) 就造一个错误收尾结果返回,
-        用返回值而不是异常表达失败, 让调用方统一走"直接返回"分支。
-        """
-
-        pending = self.session.pending_permission_execution
-        if pending is None or pending.request_id != request_id:
-            return AgentTurnResult(
-                status=AgentTurnStatus.COMPLETED,
-                response=ChatResponse(
-                    provider=self.provider.name,
-                    model=self.provider.model,
-                    content="没有找到可恢复的权限确认请求。",
-                    finish_reason="error",
-                ),
-            )
-        if self.session.permission_manager is None:
-            return AgentTurnResult(
-                status=AgentTurnStatus.COMPLETED,
-                response=ChatResponse(
-                    provider=self.provider.name,
-                    model=self.provider.model,
-                    content="当前会话没有权限管理器，无法恢复权限确认。",
-                    finish_reason="error",
-                ),
-            )
-        return pending
-
-    def _prepare_permission_resume(
-        self,
-        pending: PendingPermissionExecution,
-        answer: str,
-    ) -> ToolResult | None:
-        """先判定这个回答要不要拦住执行, 并发观测事件。
-
-        返回 ToolResult: 被拦 (用户拒绝 / 写前预览失效), 调用方直接用该结果补洞;
-        返回 None: 放行, 调用方接着执行原始 tool_call。
-        """
-
-        result = self._blocked_permission_resume_result(pending, answer)
-        if result is not None:
-            self._emit_tool_event(
-                "denied",
-                pending.tool_call,
-                result=result,
-                permission_request=pending.permission_request,
-            )
-            return result
-        self._emit_tool_event(
-            "started",
-            pending.tool_call,
-            permission_request=pending.permission_request,
-        )
-        self._check_cancelled()
-        return None
-
-    def _execute_resumed_permission_tool_call(self, pending: PendingPermissionExecution) -> ToolResult:
-        # 用户同意后使用 session 保存的原始 tool_call，不能相信 UI 回传的参数。
-        return self.tool_executor.execute_after_permission_with_cancellation_context(pending.tool_call)
-
-    def _emit_finished_permission_resume(
-        self,
-        pending: PendingPermissionExecution,
-        result: ToolResult,
-    ) -> None:
-        """补发执行完成的观测事件, 让 UI 能把 started -> finished 配成一对。"""
-
-        self._emit_tool_event(
-            "finished",
-            pending.tool_call,
-            result=result,
-            permission_request=pending.permission_request,
-        )
-
-    def _finish_permission_resume(self, pending: PendingPermissionExecution, result: ToolResult) -> None:
-        """收尾: 清 pending, 把最终 tool_result 落库, 悬空 tool_call 至此闭合。"""
-
-        self.session.pending_permission_execution = None
-        self._observe_tool_result(pending.tool_call, result)
-        self.session.append_tool_result(tool_call=pending.tool_call, result=result)
-        # 当初同批次里排在这个需审批调用之后的调用被跳过了, 这里补记为 skipped,
-        # 保证同批每个 tool_call 都有配对的收尾记录
-        self._emit_settlements("skipped", self.tool_settlement.append_skipped(pending.skipped_tool_calls))
-        self._tool_rounds_completed += 1
-
-    def _resolve_pending_confirmation(
-        self,
-        pending: PendingPermissionExecution,
-        answer: str,
-    ):
-        """把用户的文本回答解析成权限决定 (ALLOW / DENY)。
-
-        review_only (写前预览) 走单独分支: 同意前重新预检一遍, 防止预览期间文件
-        或策略变化, 避免"批准了一个现在已经不允许的修改"。未知回答一律按 DENY
-        处理 (fail-closed)。
-        """
-
-        permission_manager = self.session.permission_manager
-        assert permission_manager is not None
-        if not pending.review_only:
-            return permission_manager.resolve_confirmation(pending.permission_request, answer)
-        normalized = answer.strip().lower()
-        if normalized in {"allow_once", "allow", "once", "2"}:
-            current = self.session.preflight_tool_call_permission(pending.tool_call)
-            if current is not None and current.decision.kind == PermissionDecisionKind.DENY:
-                return current.decision
-            return PermissionDecision(kind=PermissionDecisionKind.ALLOW, reason="用户批准应用已预览的修改。")
-        if normalized in {"deny", "no", "1"} or normalized.startswith(("reject:", "reject_with_feedback:")):
-            return permission_manager.resolve_confirmation(pending.permission_request, answer)
-        return PermissionDecision(
-            kind=PermissionDecisionKind.DENY,
-            reason=f"未知写前预览选择：{answer}",
-        )
-
-    def _blocked_permission_resume_result(
-        self,
-        pending: PendingPermissionExecution,
-        answer: str,
-    ) -> ToolResult | None:
-        """算出"不执行原调用"时的合成 tool_result; 返回 None 表示放行执行。
-
-        三种拦截: ① 用户拒绝; ② 写前预览本身就失败; ③ 预览已过期 (确认期间
-        目标文件被改动, 旧 diff 不可信)。
-        """
-
-        decision = self._resolve_pending_confirmation(pending, answer)
-        if decision.kind == PermissionDecisionKind.DENY:
-            return make_permission_denied_result(
-                tool_name=pending.tool_call.name,
-                request=pending.permission_request,
-                decision=decision,
-            )
-        if pending.prewrite_review is None:
-            return None
-        if not pending.prewrite_review.ok:
-            return make_prewrite_review_failed_result(
-                tool_name=pending.tool_call.name,
-                request=pending.permission_request,
-                error=pending.prewrite_review.error or "未知错误",
-            )
-        permission_manager = self.session.permission_manager
-        assert permission_manager is not None
-        if pending.prewrite_review.is_current(
-            permission_manager.policy.project_root,
-            access=self.session.sandbox_access,
-        ):
-            return None
-        return make_prewrite_review_stale_result(
-            tool_name=pending.tool_call.name,
-            request=pending.permission_request,
-        )
-
-    def _complete_once(
-        self,
-        *,
-        tool_choice="auto",
-        runtime_instruction: str | None = None,
-    ) -> ChatResponse:
-        """构造一次 provider 请求并获得模型响应。
-
-        这一步只负责“问模型一次”, 不处理工具循环。拆开后, 同步调用、streaming 调用、
-        prompt-too-long 恢复都可以复用同一套上下文构造逻辑。
-        """
-
-        prepared = self._prepare_main_provider_request(
-            tool_choice=tool_choice,
-            runtime_instruction=runtime_instruction,
-        )
-        self._reserve_provider_call()
-        self._check_turn_timeout()
-        self._check_cancelled()
-        response = self.provider.complete(prepared.request)
-        self._record_projection_consumed(prepared)
-        return response
-
-    def _main_chat_request(self, messages, definitions, tool_choice) -> ChatRequest:
-        return ChatRequest(
-            messages=messages,
-            tools=definitions,
-            tool_choice=tool_choice,
-            **self.request_options.as_chat_request_kwargs(),
-        )
-
-    def _complete_once_with_recovery(
-        self,
-        *,
-        tool_choice="auto",
-        runtime_instruction: str | None = None,
-    ) -> ChatResponse:
-        """同步模式下一次 provider 调用, 并处理 prompt-too-long 的单次恢复
-
-        provider 如果拒绝请求, 说明 assistant 回复还没有产生, 也就没有新消息要落库。
-        这时可以先触发 blocking compact, 再重建 provider messages 重试一次。
-        """
-
-        transient_retries = 0
-        compaction_attempted = False
-        while True:
-            try:
-                return self._complete_once(
-                    tool_choice=tool_choice,
-                    runtime_instruction=runtime_instruction,
-                )
-            except ProviderError as exc:
-                if exc.retryable and transient_retries < self.provider_retry_policy.max_retries:
-                    transient_retries += 1
-                    self.turn_telemetry.observe_provider_retry(exc.kind)
-                    self._wait_before_provider_retry(transient_retries)
-                    continue
-                if exc.requires_compaction and not compaction_attempted:
-                    compaction_attempted = True
-                    result = self._compact_for_prompt_too_long(
-                        runtime_instruction=runtime_instruction
-                    )
-                    if result is not None and result.status == "success":
-                        self.turn_telemetry.observe_provider_retry(exc.kind)
-                        continue
-                raise
-
-    async def _stream_once(
-        self,
-        *,
-        tool_choice="auto",
-        runtime_instruction: str | None = None,
-    ) -> ChatResponse:
-        """消费一次 provider stream，最终仍返回完整 ChatResponse。
-
-        UI 可以读取 `last_stream_events` 展示 text_delta；但工具调用必须等 stream 完成后
-        才能执行，因为 OpenAI-compatible 的 tool arguments 可能分散在多个 chunk 中。
-        """
-
-        prepared = self._prepare_main_provider_request(
-            tool_choice=tool_choice,
-            runtime_instruction=runtime_instruction,
-        )
-        final_response: ChatResponse | None = None
-        self._reserve_provider_call()
-        self._check_turn_timeout()
-        self._check_cancelled()
-        async for event in self.provider.astream(prepared.request):
-            self._check_cancelled()
-            self.last_stream_events.append(event)
-            if self.stream_event_handler is not None:
-                self.stream_event_handler(event)
-            if event.kind == "message_completed":
-                final_response = event.response
-        if final_response is None:
-            raise ProviderError(
-                ProviderErrorKind.API_ERROR,
-                "provider stream ended without message_completed event",
-            )
-        self._record_projection_consumed(prepared)
-        return final_response
-
-    async def _stream_once_with_recovery(
-        self,
-        *,
-        tool_choice="auto",
-        runtime_instruction: str | None = None,
-    ) -> ChatResponse:
-        transient_retries = 0
-        compaction_attempted = False
-        while True:
-            try:
-                return await self._stream_once_attempt(
-                    tool_choice=tool_choice,
-                    runtime_instruction=runtime_instruction,
-                )
-            except ProviderError as exc:
-                if exc.retryable:
-                    transient_retries += 1
-                    if transient_retries <= self.provider_retry_policy.max_retries:
-                        self.turn_telemetry.observe_provider_retry(exc.kind)
-                        await self._wait_before_provider_retry_async(transient_retries)
-                    if transient_retries < self.provider_retry_policy.max_retries:
-                        continue
-                    return self._complete_once_with_recovery(
-                        tool_choice=tool_choice,
-                        runtime_instruction=runtime_instruction,
-                    )
-                if exc.requires_compaction and not compaction_attempted:
-                    compaction_attempted = True
-                    result = self._compact_for_prompt_too_long(
-                        runtime_instruction=runtime_instruction
-                    )
-                    if result is not None and result.status == "success":
-                        self.turn_telemetry.observe_provider_retry(exc.kind)
-                        continue
-                raise
-
-    def _wait_before_provider_retry(self, retry_number: int) -> None:
-        self._check_turn_timeout()
-        self._check_cancelled()
-        delay = self.provider_retry_policy.delay_for_retry(retry_number)
-        self.provider_retry_sleeper(delay)
-        self._check_turn_timeout()
-        self._check_cancelled()
-
-    async def _wait_before_provider_retry_async(self, retry_number: int) -> None:
-        self._check_turn_timeout()
-        self._check_cancelled()
-        delay = self.provider_retry_policy.delay_for_retry(retry_number)
-        await anyio.to_thread.run_sync(self.provider_retry_sleeper, delay)
-        self._check_turn_timeout()
-        self._check_cancelled()
-
-    async def _stream_once_attempt(
-        self,
-        *,
-        tool_choice="auto",
-        runtime_instruction: str | None = None,
-    ) -> ChatResponse:
-        start_event_count = len(self.last_stream_events)
-        try:
-            return await self._stream_once(
-                tool_choice=tool_choice,
-                runtime_instruction=runtime_instruction,
-            )
-        except ProviderError:
-            # streaming 尝试失败时，不能把已经收到的局部 delta 当成真实回答留给 UI。
-            # 真正成功的重试会重新产生完整事件。
-            del self.last_stream_events[start_event_count:]
-            raise
+    # 工具循环：先保存模型调用，再执行工具，最后把结果交回模型。
 
     def _run_tool_loop_interactive(self, complete_once, *, initial_tool_choice="auto") -> AgentTurnResult:
         """核心工具循环: 问模型, 执行工具, 再把工具结果回喂给模型。
@@ -860,7 +376,7 @@ class AgentLoop:
             # 需要用户拍板
             if pending_input is not None:
                 return self._pending_turn_result(pending_input)
-            
+
             if response.finish_reason != AgentLoopStopReason.TOOL_ROUND_LIMIT.value:
                 # 任务清单对账: 模型建的 todo 清单和实际执行是否一致
                 response, pending_input, tool_rounds = self._run_task_plan_reconciliation_if_needed(
@@ -896,6 +412,48 @@ class AgentLoop:
         # 没有工具调用时, 这条 response 就是最终 assistant 回复. 命中轮次上限时也会写入
         # 一条纯文本说明, 避免保存未执行的 tool_call
         return self._complete_turn(response)    # 正常：最终回复
+
+    def _continue_tool_loop_from_response(
+        self,
+        response: ChatResponse,
+        complete_once,
+        tool_rounds: int,
+    ) -> tuple[ChatResponse, UserInputRequest | None, int]:
+        """从已有模型回复出发, 循环执行工具调用并把结果回喂模型, 直到模型给出最终答复。
+
+        入参:
+        - `response`: 当前模型回复, 其中的 tool_calls 决定是否进入循环;
+        - `complete_once`: 调用大模型的函数(策略参数, 由调用方注入), 返回新的 ChatResponse;
+        - `tool_rounds`: 已完成的工具轮次数, 用于校验上限。
+
+        返回三元组: (最终模型回复, 需用户输入的请求(权限确认等, 无则为 None), 工具轮次数)。
+        """
+
+        while response.tool_calls:
+            self._check_cancelled()
+            if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
+                return self._tool_round_limit_response(response), None, tool_rounds
+
+            # 关键顺序：必须先写 assistant tool_call，再写对应 tool_result。provider 后续
+            # 才能看到合法的 “assistant(tool_calls) -> tool(result)” 消息序列。
+            self.session.append_assistant_response(response)
+            # 执行工具调用
+            execution = self.tool_executor.execute_interactive(response.tool_calls)
+            if execution.pending_input is not None:
+                # 工具执行期间需要挂起(权限确认 ASK 或工具反问用户): 立即返回 pending_input,
+                # 本轮暂停; 用户回复后走 resume 从断点恢复, 已执行的工具不会重跑。
+                return response, execution.pending_input, tool_rounds
+            if execution.task_hash_changed:
+                # task_boundary 判定发生任务切换: 趁新旧任务的分界点先做上下文压缩
+                self._compact_after_task_hash_changed()
+
+            tool_rounds += 1
+            self._tool_rounds_completed = tool_rounds
+            if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
+                return self._tool_round_limit_response(response), None, tool_rounds
+            self._check_cancelled()
+            response = self._drop_unsupported_tool_calls(complete_once())
+        return response, None, tool_rounds
 
     async def _run_tool_loop_interactive_async(self, complete_once, *, initial_tool_choice="auto") -> AgentTurnResult:
         """streaming 版本的工具循环，语义与同步版本一致。"""
@@ -944,6 +502,32 @@ class AgentLoop:
 
         return self._complete_turn(response)
 
+    async def _continue_tool_loop_from_response_async(
+        self,
+        response: ChatResponse,
+        complete_once,
+        tool_rounds: int,
+    ) -> tuple[ChatResponse, UserInputRequest | None, int]:
+        while response.tool_calls:
+            self._check_cancelled()
+            if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
+                return self._tool_round_limit_response(response), None, tool_rounds
+
+            self.session.append_assistant_response(response)
+            execution = await self.tool_executor.execute_interactive_async(response.tool_calls)
+            if execution.pending_input is not None:
+                return response, execution.pending_input, tool_rounds
+            if execution.task_hash_changed:
+                self._compact_after_task_hash_changed()
+
+            tool_rounds += 1
+            self._tool_rounds_completed = tool_rounds
+            if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
+                return self._tool_round_limit_response(response), None, tool_rounds
+            self._check_cancelled()
+            response = self._drop_unsupported_tool_calls(await complete_once())
+        return response, None, tool_rounds
+
     def _pending_turn_result(self, pending_input: UserInputRequest) -> AgentTurnResult:
         self._persist_turn_telemetry(
             status="paused",
@@ -972,47 +556,7 @@ class AgentLoop:
         )
         return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
 
-    def _continue_tool_loop_from_response(
-        self,
-        response: ChatResponse,
-        complete_once,
-        tool_rounds: int,
-    ) -> tuple[ChatResponse, UserInputRequest | None, int]:
-        """从已有模型回复出发, 循环执行工具调用并把结果回喂模型, 直到模型给出最终答复。
-
-        入参:
-        - `response`: 当前模型回复, 其中的 tool_calls 决定是否进入循环;
-        - `complete_once`: 调用大模型的函数(策略参数, 由调用方注入), 返回新的 ChatResponse;
-        - `tool_rounds`: 已完成的工具轮次数, 用于校验上限。
-
-        返回三元组: (最终模型回复, 需用户输入的请求(权限确认等, 无则为 None), 工具轮次数)。
-        """
-
-        while response.tool_calls:
-            self._check_cancelled()
-            if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
-                return self._tool_round_limit_response(response), None, tool_rounds
-
-            # 关键顺序：必须先写 assistant tool_call，再写对应 tool_result。provider 后续
-            # 才能看到合法的 “assistant(tool_calls) -> tool(result)” 消息序列。
-            self.session.append_assistant_response(response)
-            # 执行工具调用
-            execution = self.tool_executor.execute_interactive(response.tool_calls)
-            if execution.pending_input is not None:
-                # 工具执行期间需要挂起(权限确认 ASK 或工具反问用户): 立即返回 pending_input,
-                # 本轮暂停; 用户回复后走 resume 从断点恢复, 已执行的工具不会重跑。
-                return response, execution.pending_input, tool_rounds
-            if execution.task_hash_changed:
-                # task_boundary 判定发生任务切换: 趁新旧任务的分界点先做上下文压缩
-                self._compact_after_task_hash_changed()
-
-            tool_rounds += 1
-            self._tool_rounds_completed = tool_rounds
-            if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
-                return self._tool_round_limit_response(response), None, tool_rounds
-            self._check_cancelled()
-            response = self._drop_unsupported_tool_calls(complete_once())
-        return response, None, tool_rounds
+    # 结束前检查：任务计划对账与完成证据检查，可以再次进入工具循环。
 
     def _run_task_plan_reconciliation_if_needed(
         self,
@@ -1109,95 +653,305 @@ class AgentLoop:
             self.turn_telemetry.observe_completion_gate(reason_count=len(decision.reasons))
         return instruction
 
-    async def _continue_tool_loop_from_response_async(
-        self,
-        response: ChatResponse,
-        complete_once,
-        tool_rounds: int,
-    ) -> tuple[ChatResponse, UserInputRequest | None, int]:
-        while response.tool_calls:
-            self._check_cancelled()
-            if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
-                return self._tool_round_limit_response(response), None, tool_rounds
+    # 权限恢复：找到本地待确认调用，交给 ToolExecutor，再继续原来的一轮。
 
-            self.session.append_assistant_response(response)
-            execution = await self.tool_executor.execute_interactive_async(response.tool_calls)
-            if execution.pending_input is not None:
-                return response, execution.pending_input, tool_rounds
-            if execution.task_hash_changed:
-                self._compact_after_task_hash_changed()
+    def _resume_with_user_input_sync(self, request_id: str, answer: str) -> AgentTurnResult:
+        """用用户回答恢复一个暂停中的权限确认, 然后继续工具循环。
 
-            tool_rounds += 1
-            self._tool_rounds_completed = tool_rounds
-            if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
-                return self._tool_round_limit_response(response), None, tool_rounds
-            self._check_cancelled()
-            response = self._drop_unsupported_tool_calls(await complete_once())
-        return response, None, tool_rounds
+        为什么需要专门通道: 暂停时模型的 tool_call 已经落库, 但还没有配对的
+        tool_result, 历史处于悬空状态; 而 provider API 要求 assistant(tool_calls)
+        后面必须紧跟每个 tool_call_id 对应的 tool_result。如果像普通 ask_user 那样
+        把用户的"同意/拒绝"当成下一条 user 消息直接追加, 序列就不合法, API 会拒绝。
 
-    def _append_interrupted_tool_results(self) -> None:
-        self._emit_settlements("interrupted", self.tool_settlement.append_interrupted_tail())
-
-    def _repair_interrupted_tool_calls_before_provider_request(self) -> None:
-        """调模型前的对账: 补齐上一轮被打断留下的悬空 tool_call
-
-        Esc 取消 / 轮次超时 / 异常崩溃可能让日志尾部出现"有 tool_call、无
-        tool_result"的残缺序列, 直接发给 provider 会消息非法. 这里为每个孤儿
-        调用补写一条"结果未知"的中断记录, 恢复"每个 tool_call 必有配对结果"
-        的不变量. 权限暂停造成的悬空不在此列——那是合法的在途交易, 由
-        resume_with_user_input 补齐, 此处会跳过.
+        所以这里做的是"补洞": 按 request_id 从 session 找到 pending 的原始 tool_call
+        (不信 UI 回传参数), 根据回答补齐最终 tool_result (拒绝则造拒绝结果, 同意则
+        真正执行), 落库闭合历史后, 再进入工具循环继续问模型。
         """
 
-        self._emit_settlements("interrupted", self.tool_settlement.repair_before_provider_request())
+        try:
+            return self._resume_with_user_input_sync_impl(request_id, answer)
+        except BaseException as exc:
+            self._persist_errored_turn(exc)
+            raise
 
-    def _emit_settlements(self, kind, settlements) -> None:
-        for settlement in settlements:
-            self._emit_tool_event(kind, settlement.tool_call, result=settlement.result)
+    def _resume_with_user_input_sync_impl(self, request_id: str, answer: str) -> AgentTurnResult:
+        # 恢复不算新一轮对话: 只有 pending 匹配时才重置计时器, 且不清空护栏计数,
+        # 让这次恢复仍然占用原来那一轮的预算 (详见 _begin_turn)
+        pending = self.session.pending_permission_execution
+        if pending is not None and pending.request_id == request_id:
+            self._begin_turn(new_user_turn=False)
+        try:
+            self._check_turn_timeout()
+            self._check_cancelled()
+        except _AgentLoopLimitReached as exc:
+            return self._complete_turn(self._limit_response(exc.reason))
+        except AgentCancelledError:
+            return self._complete_turn(self._interrupted_response())
+        # 核心一步: 按回答补齐悬空的 tool_result (拒绝则造拒绝结果, 同意则执行原始
+        # tool_call), 落库闭合历史. 返回非 None 说明 pending 不存在等异常, 直接收尾
+        result = self._append_permission_resume_result(request_id, answer)
+        if result is not None:
+            return result
+        # 权限悬空已由上面补齐; 这里再对账一遍, 修复取消/崩溃留下的其他悬空 tool_call
+        self._repair_interrupted_tool_calls_before_provider_request()
+        self._check_cancelled()
+        # 历史合法后重新进入工具循环, 带着补全的 tool_result 继续问模型
+        return self._run_tool_loop_interactive(self._complete_once_with_recovery)
 
-    def _emit_tool_event(
-        self,
-        kind: Literal[
-            "prewrite_review",
-            "started",
-            "finished",
-            "permission_requested",
-            "denied",
-            "skipped",
-            "interrupted",
-            "background_started",
-        ],
-        tool_call: ToolCall,
-        *,
-        result: ToolResult | None = None,
-        permission_request: PermissionRequest | None = None,
-        prewrite_review: dict[str, object] | None = None,
-    ) -> None:
-        """把工具执行节点广播给订阅方(UI)。
+    async def _resume_with_user_input_streaming(self, request_id: str, answer: str) -> AgentTurnResult:
+        """流式模式下恢复权限确认，并继续消费 provider stream。"""
 
-        将 kind 及对应载荷打包成 ToolExecutionEvent, 调用注入的 tool_event_handler;
-        无订阅方时静默跳过。kind 取值:
-        - prewrite_review: 写入类工具执行前的预检(展示 diff 给用户);
-        - started: 开始执行; finished: 执行完毕(带 result);
-        - permission_requested: 卡在权限确认(带 permission_request);
-        - denied: 被拒(校验失败/隐藏工具/权限拒绝);
-        - skipped: 本轮被跳过(前面已有 pending);
-        - interrupted: 被 Esc/超时打断;
-        - background_started: 转入后台执行。
+        try:
+            return await self._resume_with_user_input_streaming_impl(request_id, answer)
+        except BaseException as exc:
+            self._persist_errored_turn(exc)
+            raise
+
+    async def _resume_with_user_input_streaming_impl(self, request_id: str, answer: str) -> AgentTurnResult:
+        """同步路径 (_resume_with_user_input_sync_impl) 的流式镜像, 步骤一一对应:
+
+        恢复计时 (不算新一轮) -> 超时/取消检查 -> 补洞落库 -> 进流式工具循环。
         """
 
-        if self.tool_event_handler is None:
-            return
-        # tool_event_handler 是注入的回调函数, 由 firstcoder/app/tui_view.py 在每轮对话开始时安装
-        # 带括号即调用该函数, 把事件对象作为入参传给它
-        self.tool_event_handler(
-            ToolExecutionEvent(
-                kind=kind,
-                tool_call=tool_call,
-                result=result,
-                permission_request=permission_request,
-                prewrite_review=prewrite_review,
+        pending = self.session.pending_permission_execution
+        if pending is not None and pending.request_id == request_id:
+            self._begin_turn(new_user_turn=False)
+        try:
+            self._check_turn_timeout()
+            self._check_cancelled()
+        except _AgentLoopLimitReached as exc:
+            return self._complete_turn(self._limit_response(exc.reason))
+        except AgentCancelledError:
+            return self._complete_turn(self._interrupted_response())
+        result = await self._append_permission_resume_result_async(request_id, answer)
+        if result is not None:
+            return result
+        self._check_cancelled()
+        return await self._run_tool_loop_interactive_async(self._stream_once_with_recovery)
+
+    def _pending_permission_for_resume(
+        self,
+        request_id: str,
+    ) -> PendingPermissionExecution | AgentTurnResult:
+        """按 request_id 在 session 运行期状态里找待恢复的 pending。
+
+        找不到 (或不匹配, 比如 UI 拿过期 id 重放) 就造一个错误收尾结果返回,
+        用返回值而不是异常表达失败, 让调用方统一走"直接返回"分支。
+        """
+
+        pending = self.session.pending_permission_execution
+        if pending is None or pending.request_id != request_id:
+            return AgentTurnResult(
+                status=AgentTurnStatus.COMPLETED,
+                response=ChatResponse(
+                    provider=self.provider.name,
+                    model=self.provider.model,
+                    content="没有找到可恢复的权限确认请求。",
+                    finish_reason="error",
+                ),
             )
+        if self.session.permission_manager is None:
+            return AgentTurnResult(
+                status=AgentTurnStatus.COMPLETED,
+                response=ChatResponse(
+                    provider=self.provider.name,
+                    model=self.provider.model,
+                    content="当前会话没有权限管理器，无法恢复权限确认。",
+                    finish_reason="error",
+                ),
+            )
+        return pending
+
+    def _append_permission_resume_result(self, request_id: str, answer: str) -> AgentTurnResult | None:
+        """补洞主流程: 校验 pending -> 按回答得到 tool_result -> 落库收尾。
+
+        返回 None 表示悬空 tool_call 已闭合, 调用方应继续工具循环; 返回
+        AgentTurnResult 表示前置校验失败 (无匹配 pending / 无权限管理器),
+        直接作为本轮结果返回。
+        """
+
+        pending = self._pending_permission_for_resume(request_id)
+        if isinstance(pending, AgentTurnResult):
+            return pending
+        self.tool_executor.resume_permission(pending, answer)
+        self._tool_rounds_completed += 1
+        return None
+
+    async def _append_permission_resume_result_async(self, request_id: str, answer: str) -> AgentTurnResult | None:
+        """同步版的异步镜像: 步骤完全一致, 仅把工具执行丢到线程里避免阻塞事件循环。"""
+
+        pending = self._pending_permission_for_resume(request_id)
+        if isinstance(pending, AgentTurnResult):
+            return pending
+        await self.tool_executor.resume_permission_async(pending, answer)
+        self._tool_rounds_completed += 1
+        return None
+
+    # 请求模型：同步与流式调用、失败重试，以及成功后的消费记录。
+
+    def _complete_once_with_recovery(
+        self,
+        *,
+        tool_choice="auto",
+        runtime_instruction: str | None = None,
+    ) -> ChatResponse:
+        """同步模式下一次 provider 调用, 并处理 prompt-too-long 的单次恢复
+
+        provider 如果拒绝请求, 说明 assistant 回复还没有产生, 也就没有新消息要落库。
+        这时可以先触发 blocking compact, 再重建 provider messages 重试一次。
+        """
+
+        transient_retries = 0
+        compaction_attempted = False
+        while True:
+            try:
+                return self._complete_once(
+                    tool_choice=tool_choice,
+                    runtime_instruction=runtime_instruction,
+                )
+            except ProviderError as exc:
+                if exc.retryable and transient_retries < self.provider_retry_policy.max_retries:
+                    transient_retries += 1
+                    self.turn_telemetry.observe_provider_retry(exc.kind)
+                    self._wait_before_provider_retry(transient_retries)
+                    continue
+                if exc.requires_compaction and not compaction_attempted:
+                    compaction_attempted = True
+                    result = self._compact_for_prompt_too_long(
+                        runtime_instruction=runtime_instruction
+                    )
+                    if result is not None and result.status == "success":
+                        self.turn_telemetry.observe_provider_retry(exc.kind)
+                        continue
+                raise
+
+    def _complete_once(
+        self,
+        *,
+        tool_choice="auto",
+        runtime_instruction: str | None = None,
+    ) -> ChatResponse:
+        """构造一次 provider 请求并获得模型响应。
+
+        这一步只负责“问模型一次”, 不处理工具循环。拆开后, 同步调用、streaming 调用、
+        prompt-too-long 恢复都可以复用同一套上下文构造逻辑。
+        """
+
+        prepared = self._prepare_main_provider_request(
+            tool_choice=tool_choice,
+            runtime_instruction=runtime_instruction,
         )
+        self._reserve_provider_call()
+        self._check_turn_timeout()
+        self._check_cancelled()
+        response = self.provider.complete(prepared.request)
+        self._record_projection_consumed(prepared)
+        return response
+
+    async def _stream_once_with_recovery(
+        self,
+        *,
+        tool_choice="auto",
+        runtime_instruction: str | None = None,
+    ) -> ChatResponse:
+        transient_retries = 0
+        compaction_attempted = False
+        while True:
+            try:
+                return await self._stream_once_attempt(
+                    tool_choice=tool_choice,
+                    runtime_instruction=runtime_instruction,
+                )
+            except ProviderError as exc:
+                if exc.retryable:
+                    transient_retries += 1
+                    if transient_retries <= self.provider_retry_policy.max_retries:
+                        self.turn_telemetry.observe_provider_retry(exc.kind)
+                        await self._wait_before_provider_retry_async(transient_retries)
+                    if transient_retries < self.provider_retry_policy.max_retries:
+                        continue
+                    return self._complete_once_with_recovery(
+                        tool_choice=tool_choice,
+                        runtime_instruction=runtime_instruction,
+                    )
+                if exc.requires_compaction and not compaction_attempted:
+                    compaction_attempted = True
+                    result = self._compact_for_prompt_too_long(
+                        runtime_instruction=runtime_instruction
+                    )
+                    if result is not None and result.status == "success":
+                        self.turn_telemetry.observe_provider_retry(exc.kind)
+                        continue
+                raise
+
+    async def _stream_once_attempt(
+        self,
+        *,
+        tool_choice="auto",
+        runtime_instruction: str | None = None,
+    ) -> ChatResponse:
+        start_event_count = len(self.last_stream_events)
+        try:
+            return await self._stream_once(
+                tool_choice=tool_choice,
+                runtime_instruction=runtime_instruction,
+            )
+        except ProviderError:
+            # streaming 尝试失败时，不能把已经收到的局部 delta 当成真实回答留给 UI。
+            # 真正成功的重试会重新产生完整事件。
+            del self.last_stream_events[start_event_count:]
+            raise
+
+    async def _stream_once(
+        self,
+        *,
+        tool_choice="auto",
+        runtime_instruction: str | None = None,
+    ) -> ChatResponse:
+        """消费一次 provider stream，最终仍返回完整 ChatResponse。
+
+        UI 可以读取 `last_stream_events` 展示 text_delta；但工具调用必须等 stream 完成后
+        才能执行，因为 OpenAI-compatible 的 tool arguments 可能分散在多个 chunk 中。
+        """
+
+        prepared = self._prepare_main_provider_request(
+            tool_choice=tool_choice,
+            runtime_instruction=runtime_instruction,
+        )
+        final_response: ChatResponse | None = None
+        self._reserve_provider_call()
+        self._check_turn_timeout()
+        self._check_cancelled()
+        async for event in self.provider.astream(prepared.request):
+            self._check_cancelled()
+            self.last_stream_events.append(event)
+            if self.stream_event_handler is not None:
+                self.stream_event_handler(event)
+            if event.kind == "message_completed":
+                final_response = event.response
+        if final_response is None:
+            raise ProviderError(
+                ProviderErrorKind.API_ERROR,
+                "provider stream ended without message_completed event",
+            )
+        self._record_projection_consumed(prepared)
+        return final_response
+
+    def _wait_before_provider_retry(self, retry_number: int) -> None:
+        self._check_turn_timeout()
+        self._check_cancelled()
+        delay = self.provider_retry_policy.delay_for_retry(retry_number)
+        self.provider_retry_sleeper(delay)
+        self._check_turn_timeout()
+        self._check_cancelled()
+
+    async def _wait_before_provider_retry_async(self, retry_number: int) -> None:
+        self._check_turn_timeout()
+        self._check_cancelled()
+        delay = self.provider_retry_policy.delay_for_retry(retry_number)
+        await anyio.to_thread.run_sync(self.provider_retry_sleeper, delay)
+        self._check_turn_timeout()
+        self._check_cancelled()
 
     def _prepare_main_provider_request(
         self,
@@ -1242,7 +996,12 @@ class AgentLoop:
             runtime_instruction=runtime_instruction,
         )
         # 组装
-        request = self._main_chat_request(messages, definitions, tool_choice)
+        request = ChatRequest(
+            messages=messages,
+            tools=definitions,
+            tool_choice=tool_choice,
+            **self.request_options.as_chat_request_kwargs(),
+        )
         return PreparedMainRequest(
             request=request,
             request_id=new_request_id(),
@@ -1265,6 +1024,49 @@ class AgentLoop:
             model=self.provider.model,
         )
 
+    # 上下文：构造模型可见消息，估算预算，必要时请求压缩。
+
+    def _request_messages(self, *, view=None, runtime_instruction: str | None = None):
+        """拼出本次请求的完整消息: 静态系统前缀 + 动态叠加(临时指令/验收契约/计划快照),
+        再与消息历史合并成 provider 格式的 messages。"""
+
+        resolved_view = view or self.session.rebuild_view()
+        system_prefix = self.session.build_system_prefix(
+            provider_name=self.provider.name,
+            provider_model=self.provider.model,
+            provider_capabilities=getattr(self.provider, "capabilities", None),
+        )
+        # 以下是动态叠加内容
+        # 本次请求的临时指令
+        if runtime_instruction:
+            system_prefix = [
+                *system_prefix,
+                ChatMessage(role="system", content=runtime_instruction),
+            ]
+
+        # 验收契约
+        acceptance_contract = self.execution_evidence.render_acceptance_contract()
+        if acceptance_contract:
+            system_prefix = [
+                *system_prefix,
+                ChatMessage(role="system", content=acceptance_contract),
+            ]
+
+        # task_plan 快照
+        if resolved_view.task_plan is not None:
+            system_prefix = [
+                *system_prefix,
+                ChatMessage(
+                    role="system",
+                    content=render_current_task_plan_snapshot(resolved_view.task_plan),
+                ),
+            ]
+        return self.context_builder.build_provider_messages(
+            resolved_view,
+            system_prefix=system_prefix,
+            store_root=self.session.store.root,
+        )
+
     def _context_budget_for_view(
         self,
         view,
@@ -1281,13 +1083,6 @@ class AgentLoop:
             tools=definitions,
             context_window=self.context_window,
             max_output_tokens=self.request_options.max_tokens,
-        )
-
-    def context_budget_for_view(self, view) -> ContextBudget:
-        return self._context_budget_for_view(
-            view,
-            runtime_instruction=None,
-            definitions=self._provider_tool_definitions(),
         )
 
     def _compact_if_needed(
@@ -1335,52 +1130,36 @@ class AgentLoop:
     def _compact_after_task_hash_changed(self):
         return self._compact_if_needed(trigger=ContextWindowTrigger.TASK_HASH_CHANGED)
 
-    def _build_provider_messages(self, view, *, system_prefix):
-        return self.context_builder.build_provider_messages(
-            view,
-            system_prefix=system_prefix,
-            store_root=self.session.store.root,
-        )
+    def _append_pending_guidance(self) -> None:
+        """把用户在轮次运行期间插的话, 逐条转为`user_message`补进上下文(落盘),\n\n
+        让模型在下一次请求时能看到并即时调整行动
+        """
+        if self.guidance_provider is None:
+            return
+        guidance_items = self.guidance_provider()
+        for content in guidance_items:
+            text = content.strip()
+            if text:
+                self.session.append_user_message(text)
 
-    def _request_messages(self, *, view=None, runtime_instruction: str | None = None):
-        """拼出本次请求的完整消息: 静态系统前缀 + 动态叠加(临时指令/验收契约/计划快照),
-        再与消息历史合并成 provider 格式的 messages。"""
+    def _append_background_notifications(self) -> None:
+        """调模型前, 把这段时间里已完成的后台任务逐条转成 `background_notification`
+        消息补进历史; 通知不复用原始 tool_call_id(那个调用早已有"转后台"的
+        tool_result), 保证每个 tool_call 恰好配一条 result, 消息对 provider 合法。"""
 
-        resolved_view = view or self.session.rebuild_view()
-        system_prefix = self.session.build_system_prefix(
-            provider_name=self.provider.name,
-            provider_model=self.provider.model,
-            provider_capabilities=getattr(self.provider, "capabilities", None),
-        )
-        # 以下是动态叠加内容
-        # 本次请求的临时指令
-        if runtime_instruction:
-            system_prefix = [
-                *system_prefix,
-                ChatMessage(role="system", content=runtime_instruction),
-            ]
-        
-        # 验收契约
-        acceptance_contract = self.execution_evidence.render_acceptance_contract()
-        if acceptance_contract:
-            system_prefix = [
-                *system_prefix,
-                ChatMessage(role="system", content=acceptance_contract),
-            ]
+        if self.background_manager is None:
+            return
+        for notification in self.background_manager.collect_completed(session_id=self.session.session_id):
+            self.session.append_background_notification(
+                content=render_task_notification(notification),
+                job_id=notification.job_id,
+                tool_name=notification.tool_name,
+                status=notification.status,
+                task_id=notification.task_id,
+                observed_revision=notification.observed_revision,
+            )
 
-        # task_plan 快照
-        if resolved_view.task_plan is not None:
-            system_prefix = [
-                *system_prefix,
-                ChatMessage(
-                    role="system",
-                    content=render_current_task_plan_snapshot(resolved_view.task_plan),
-                ),
-            ]
-        return self._build_provider_messages(
-            resolved_view,
-            system_prefix=system_prefix,
-        )
+    # 工具可见性与执行观察：模型看到的能力必须与实际可执行的能力一致。
 
     def _provider_tool_definitions(self):
         """从注册表全集中投影出"此刻告诉模型"的工具`schema`子集。
@@ -1447,77 +1226,6 @@ class AgentLoop:
             return definition
         return with_background_controls(definition)
 
-    def _ensure_background_control_tools(self) -> None:
-        """Register background_status/background_cancel whenever background runtime exists."""
-
-        if self.background_manager is None:
-            return
-        names = set(self.session.tool_registry.names())
-        if "background_status" not in names:
-            self.session.tool_registry.register(create_background_status_tool(self.background_manager, session_id=self.session.session_id))
-        if "background_cancel" not in names:
-            self.session.tool_registry.register(create_background_cancel_tool(self.background_manager, session_id=self.session.session_id))
-
-    def _ensure_delegate_tool(self) -> None:
-        """Register the parent-facing delegate tool with a non-recursive child runner."""
-
-        if not self.enable_delegate_tool:
-            return
-        if "delegate" in self.session.tool_registry.names():
-            return
-        project_root = None
-        if self.session.permission_manager is not None:
-            project_root = self.session.permission_manager.policy.project_root
-        runner = SubagentRunner(
-            store=self.session.store,
-            provider=self.provider,
-            tools=[tool for tool in self.session.tool_registry.tools() if tool.name != "delegate"],
-            project_root=project_root,
-            agents_md=self.session.agents_md,
-            skill_catalog=self.session.skill_catalog,
-            permission_manager=self.session.permission_manager,
-            sandbox_access=self.session.sandbox_access,
-            request_options=self.request_options,
-        )
-        self.session.tool_registry.register(
-            create_delegate_tool(
-                runner,
-                parent_session_id=self.session.session_id,
-                parent_task_hash=self.session.runtime_state.active_task_hash,
-            )
-        )
-
-    def _begin_turn(self, *, new_user_turn: bool = True) -> None:
-        """轮次状态处理\n\n
-        * 新对话: 清空
-        * 权限确认暂停后恢复: 不清空
-        """
-        if new_user_turn:
-            # 新对话
-            self._active_mcp_tool_names.clear()
-            self.provider_call_count = 0
-            self.turn_started_at = self.clock()
-            self.telemetry_started_at = self.telemetry_clock()
-            self._task_plan_reconciliation_attempted = False
-            self._completion_gate_attempted = False
-            self._completion_gate_attempt_count = 0
-            self._tool_rounds_completed = 0
-            self.execution_evidence.reset()
-            self.stagnation_guard.reset()
-            self.turn_telemetry.begin(
-                turn_number=self.session.current_turn + 1,
-                started_at=self.telemetry_started_at,
-            )
-        elif not self.turn_telemetry.active:
-            # 当遇到权限确认而暂停时, 用户的回复(选择权限)并不意味着新一轮对话
-            # 因此权限确认后的恢复并不能清空当前AgentLoop
-            self.turn_started_at = self.clock()
-            self.telemetry_started_at = self.telemetry_clock()
-            self.turn_telemetry.begin(
-                turn_number=self.session.current_turn,
-                started_at=self.telemetry_started_at,
-            )
-
     def _validate_tool_call(self, tool_call: ToolCall) -> ToolResult | None:
         validation_error = self._validate_mcp_tool_call(tool_call)
         if validation_error is not None:
@@ -1528,35 +1236,6 @@ class AgentLoop:
         if not self.runtime_capabilities.enable_stagnation_guard:
             return None
         return self.stagnation_guard.validate(tool_call)
-
-    def _observe_tool_result(self, tool_call: ToolCall, result: ToolResult) -> None:
-        self._observe_mcp_search_result(tool_call, result)
-        self.turn_telemetry.observe_tool_result(
-            tool_call,
-            result,
-            elapsed_seconds=self._turn_elapsed_seconds(),
-        )
-        if not (
-            self.runtime_capabilities.enable_completion_gate
-            or self.runtime_capabilities.enable_stagnation_guard
-        ):
-            return
-        if (
-            tool_call.name == "task_boundary"
-            and result.ok
-            and result.data.get("should_trigger_compaction")
-        ):
-            self.execution_evidence.reset()
-            self.stagnation_guard.reset()
-            self._completion_gate_attempted = False
-            self._completion_gate_attempt_count = 0
-            return
-        if self.runtime_capabilities.enable_completion_gate:
-            self.execution_evidence.observe(tool_call, result)
-            if self._completion_gate_attempted and is_mutation_result(tool_call, result):
-                self._completion_gate_attempted = False
-        if self.runtime_capabilities.enable_stagnation_guard:
-            append_guidance(result, self.stagnation_guard.observe(tool_call, result))
 
     def _runtime_tool_visibility_error(self, tool_call: ToolCall) -> ToolResult | None:
         if tool_call.name == "think" and not self.runtime_capabilities.expose_think_tool:
@@ -1609,6 +1288,35 @@ class AgentLoop:
             mcp_activation_required=True,
         )
 
+    def _observe_tool_result(self, tool_call: ToolCall, result: ToolResult) -> None:
+        self._observe_mcp_search_result(tool_call, result)
+        self.turn_telemetry.observe_tool_result(
+            tool_call,
+            result,
+            elapsed_seconds=self._turn_elapsed_seconds(),
+        )
+        if not (
+            self.runtime_capabilities.enable_completion_gate
+            or self.runtime_capabilities.enable_stagnation_guard
+        ):
+            return
+        if (
+            tool_call.name == "task_boundary"
+            and result.ok
+            and result.data.get("should_trigger_compaction")
+        ):
+            self.execution_evidence.reset()
+            self.stagnation_guard.reset()
+            self._completion_gate_attempted = False
+            self._completion_gate_attempt_count = 0
+            return
+        if self.runtime_capabilities.enable_completion_gate:
+            self.execution_evidence.observe(tool_call, result)
+            if self._completion_gate_attempted and is_mutation_result(tool_call, result):
+                self._completion_gate_attempted = False
+        if self.runtime_capabilities.enable_stagnation_guard:
+            append_guidance(result, self.stagnation_guard.observe(tool_call, result))
+
     def _observe_mcp_search_result(
         self,
         tool_call: ToolCall,
@@ -1628,33 +1336,153 @@ class AgentLoop:
             if isinstance(name, str) and name in self._mcp_tool_names
         )
 
-    def _append_pending_guidance(self) -> None:
-        """把用户在轮次运行期间插的话, 逐条转为`user_message`补进上下文(落盘),\n\n
-        让模型在下一次请求时能看到并即时调整行动
+    # 任务边界：识别用户是否换了任务，并给历史消息标记归属。
+
+    def _initialize_active_task_if_missing(self, basis_message_id: str):
+        """若尚无进行中的任务, 则以该用户消息为起点自动建立首个任务。\n\n
+        * 任务: 一段目标一致的连续对话
         """
-        if self.guidance_provider is None:
-            return
-        guidance_items = self.guidance_provider()
-        for content in guidance_items:
-            text = content.strip()
-            if text:
-                self.session.append_user_message(text)
+        service = TaskBoundaryService(known_message_ids=self.session.known_message_ids)
+        observation = service.initialize_active_task(self.session.runtime_state, basis_message_id=basis_message_id)
+        if observation is not None:
+            self.session.writer.append_task_boundary_observation(observation)
+            self._tag_message_parts_with_task_hash(basis_message_id, observation.active_task_hash)
+        return observation
 
-    def _append_background_notifications(self) -> None:
-        """调模型前, 把这段时间里已完成的后台任务逐条转成 `background_notification`
-        消息补进历史; 通知不复用原始 tool_call_id(那个调用早已有"转后台"的
-        tool_result), 保证每个 tool_call 恰好配一条 result, 消息对 provider 合法。"""
+    def _classify_task_boundary(self, basis_message_id: str) -> None:
+        """识别任务边界；评测子类通过这个扩展点控制是否启用分类。"""
 
-        if self.background_manager is None:
+        self.task_boundary_classifier.classify(basis_message_id)
+
+    async def _classify_task_boundary_async(self, basis_message_id: str) -> None:
+        """流式路径保留相同扩展点，供评测子类覆盖。"""
+
+        await self.task_boundary_classifier.classify_async(basis_message_id)
+
+    def _tag_message_parts_with_task_hash(self, message_id: str, task_hash: str | None) -> None:
+        if not task_hash:
             return
-        for notification in self.background_manager.collect_completed(session_id=self.session.session_id):
-            self.session.append_background_notification(
-                content=render_task_notification(notification),
-                job_id=notification.job_id,
-                tool_name=notification.tool_name,
-                status=notification.status,
-                task_id=notification.task_id,
-                observed_revision=notification.observed_revision,
+        view = self.session.rebuild_view()
+        message = next((message for message in view.messages if message.id == message_id), None)
+        if message is None:
+            return
+        for part in message.parts:
+            self.session.writer.append_message_part_metadata_updated(
+                message_id=message_id,
+                part_id=part.id,
+                metadata={"task_hash": task_hash},
+            )
+
+    def _tag_task_boundary_messages_with_active_hash(self, data: dict[str, object]) -> None:
+        active_hash = data.get("active_task_hash")
+        message_ids = {
+            str(data.get("basis_message_id") or ""),
+            str(data.get("candidate_basis_message_id") or ""),
+        }
+        for message_id in message_ids:
+            if message_id:
+                self._tag_message_parts_with_task_hash(
+                    message_id,
+                    active_hash if isinstance(active_hash, str) else None,
+                )
+
+    # 工具消息配对与事件：修复中断记录，并向界面报告执行状态。
+
+    def _append_interrupted_tool_results(self) -> None:
+        self._emit_settlements("interrupted", self.tool_settlement.append_interrupted_tail())
+
+    def _repair_interrupted_tool_calls_before_provider_request(self) -> None:
+        """调模型前的对账: 补齐上一轮被打断留下的悬空 tool_call
+
+        Esc 取消 / 轮次超时 / 异常崩溃可能让日志尾部出现"有 tool_call、无
+        tool_result"的残缺序列, 直接发给 provider 会消息非法. 这里为每个孤儿
+        调用补写一条"结果未知"的中断记录, 恢复"每个 tool_call 必有配对结果"
+        的不变量. 权限暂停造成的悬空不在此列——那是合法的在途交易, 由
+        resume_with_user_input 补齐, 此处会跳过.
+        """
+
+        self._emit_settlements("interrupted", self.tool_settlement.repair_before_provider_request())
+
+    def _emit_settlements(self, kind, settlements) -> None:
+        for settlement in settlements:
+            self._emit_tool_event(kind, settlement.tool_call, result=settlement.result)
+
+    def _emit_tool_event(
+        self,
+        kind: Literal[
+            "prewrite_review",
+            "started",
+            "finished",
+            "permission_requested",
+            "denied",
+            "skipped",
+            "interrupted",
+            "background_started",
+        ],
+        tool_call: ToolCall,
+        *,
+        result: ToolResult | None = None,
+        permission_request: PermissionRequest | None = None,
+        prewrite_review: dict[str, object] | None = None,
+    ) -> None:
+        """把工具执行节点广播给订阅方(UI)。
+
+        将 kind 及对应载荷打包成 ToolExecutionEvent, 调用注入的 tool_event_handler;
+        无订阅方时静默跳过。kind 取值:
+        - prewrite_review: 写入类工具执行前的预检(展示 diff 给用户);
+        - started: 开始执行; finished: 执行完毕(带 result);
+        - permission_requested: 卡在权限确认(带 permission_request);
+        - denied: 被拒(校验失败/隐藏工具/权限拒绝);
+        - skipped: 本轮被跳过(前面已有 pending);
+        - interrupted: 被 Esc/超时打断;
+        - background_started: 转入后台执行。
+        """
+
+        if self.tool_event_handler is None:
+            return
+        # tool_event_handler 是注入的回调函数, 由 firstcoder/app/tui_view.py 在每轮对话开始时安装
+        # 带括号即调用该函数, 把事件对象作为入参传给它
+        self.tool_event_handler(
+            ToolExecutionEvent(
+                kind=kind,
+                tool_call=tool_call,
+                result=result,
+                permission_request=permission_request,
+                prewrite_review=prewrite_review,
+            )
+        )
+
+    # 轮次状态、限额、取消与遥测。
+
+    def _begin_turn(self, *, new_user_turn: bool = True) -> None:
+        """轮次状态处理\n\n
+        * 新对话: 清空
+        * 权限确认暂停后恢复: 不清空
+        """
+        if new_user_turn:
+            # 新对话
+            self._active_mcp_tool_names.clear()
+            self.provider_call_count = 0
+            self.turn_started_at = self.clock()
+            self.telemetry_started_at = self.telemetry_clock()
+            self._task_plan_reconciliation_attempted = False
+            self._completion_gate_attempted = False
+            self._completion_gate_attempt_count = 0
+            self._tool_rounds_completed = 0
+            self.execution_evidence.reset()
+            self.stagnation_guard.reset()
+            self.turn_telemetry.begin(
+                turn_number=self.session.current_turn + 1,
+                started_at=self.telemetry_started_at,
+            )
+        elif not self.turn_telemetry.active:
+            # 当遇到权限确认而暂停时, 用户的回复(选择权限)并不意味着新一轮对话
+            # 因此权限确认后的恢复并不能清空当前AgentLoop
+            self.turn_started_at = self.clock()
+            self.telemetry_started_at = self.telemetry_clock()
+            self.turn_telemetry.begin(
+                turn_number=self.session.current_turn,
+                started_at=self.telemetry_started_at,
             )
 
     def _check_provider_call_limit(self) -> None:
@@ -1668,6 +1496,22 @@ class AgentLoop:
         self._check_provider_call_limit()
         self.provider_call_count += 1
         self.turn_telemetry.observe_provider_call()
+
+    def _check_turn_timeout(self) -> None:
+        limit = self.limits.max_turn_seconds
+        if limit is None or self.turn_started_at is None:
+            return
+        if self.clock() - self.turn_started_at >= limit:
+            raise _AgentLoopLimitReached(AgentLoopStopReason.TURN_TIMEOUT)
+
+    def _is_cancelled(self) -> bool:
+        return self.cancellation_token is not None and self.cancellation_token.is_cancelled
+
+    def _check_cancelled(self) -> None:
+        """判断当前Token是否被取消
+        """
+        if self.cancellation_token is not None:
+            self.cancellation_token.raise_if_cancelled()
 
     def _turn_elapsed_seconds(self) -> float:
         if self.telemetry_started_at is None:
@@ -1713,22 +1557,6 @@ class AgentLoop:
             provider_failure_category=provider_category,
             finalize=True,
         )
-
-    def _check_turn_timeout(self) -> None:
-        limit = self.limits.max_turn_seconds
-        if limit is None or self.turn_started_at is None:
-            return
-        if self.clock() - self.turn_started_at >= limit:
-            raise _AgentLoopLimitReached(AgentLoopStopReason.TURN_TIMEOUT)
-
-    def _is_cancelled(self) -> bool:
-        return self.cancellation_token is not None and self.cancellation_token.is_cancelled
-
-    def _check_cancelled(self) -> None:
-        """判断当前Token是否被取消
-        """
-        if self.cancellation_token is not None:
-            self.cancellation_token.raise_if_cancelled()
 
     def _drop_unsupported_tool_calls(self, response: ChatResponse) -> ChatResponse:
         """兜底保护：不支持工具的 provider 理论上不该返回 tool_calls。
@@ -1787,6 +1615,64 @@ class AgentLoop:
             finish_reason=cast(FinishReason, "interrupted"),
             raw={"interrupted": True},
         )
+
+    def _validate_attachments(self, attachments: list[UserAttachment] | None) -> None:
+        """在消息落库前确认 provider 能消费本轮附件。
+
+        文件附件可以继续以内联文本或路径引用进入上下文；图片则必须由当前模型显式声明
+        视觉能力，避免 provider 静默忽略图片后让 agent 在错误前提下执行任务。
+        """
+
+        if not attachments or not any(item.kind == "image" for item in attachments):
+            return
+        capabilities = getattr(self.provider, "capabilities", None)
+        if bool(getattr(capabilities, "supports_vision", False)):
+            return
+        raise ValueError(
+            f"模型 {self.provider.name}/{self.provider.model} 未声明视觉能力，"
+            "无法发送图片附件；请在对应 [models] 配置中设置 vision = true。"
+        )
+
+    def _ensure_background_control_tools(self) -> None:
+        """Register background_status/background_cancel whenever background runtime exists."""
+
+        if self.background_manager is None:
+            return
+        names = set(self.session.tool_registry.names())
+        if "background_status" not in names:
+            self.session.tool_registry.register(create_background_status_tool(self.background_manager, session_id=self.session.session_id))
+        if "background_cancel" not in names:
+            self.session.tool_registry.register(create_background_cancel_tool(self.background_manager, session_id=self.session.session_id))
+
+    def _ensure_delegate_tool(self) -> None:
+        """Register the parent-facing delegate tool with a non-recursive child runner."""
+
+        if not self.enable_delegate_tool:
+            return
+        if "delegate" in self.session.tool_registry.names():
+            return
+        project_root = None
+        if self.session.permission_manager is not None:
+            project_root = self.session.permission_manager.policy.project_root
+        runner = SubagentRunner(
+            store=self.session.store,
+            provider=self.provider,
+            tools=[tool for tool in self.session.tool_registry.tools() if tool.name != "delegate"],
+            project_root=project_root,
+            agents_md=self.session.agents_md,
+            skill_catalog=self.session.skill_catalog,
+            permission_manager=self.session.permission_manager,
+            sandbox_access=self.session.sandbox_access,
+            request_options=self.request_options,
+        )
+        self.session.tool_registry.register(
+            create_delegate_tool(
+                runner,
+                parent_session_id=self.session.session_id,
+                parent_task_hash=self.session.runtime_state.active_task_hash,
+            )
+        )
+
 
 
 class _AgentLoopLimitReached(Exception):

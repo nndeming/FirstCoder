@@ -31,6 +31,25 @@ append-only JSONL events
 `system_meta` is internal state and is deliberately not projected as ordinary
 conversation. The stable system prefix is supplied separately by the session.
 
+## Read Two Entry Points First
+
+Start with `ContextBuilder.build_provider_messages` to see what reaches the
+model. It shares `_tail_messages` with `projected_tool_result_part_ids`: select
+the checkpoint tail, collapse narrowly defined adjacent duplicate calls, and
+validate call/result pairing. The first method builds messages; the second
+returns original tool-result part IDs for successful-consumption bookkeeping.
+Archive placeholders do not count as new original tool results.
+
+Then read `ContextWindowManager.compact_if_needed` to see when that context
+must shrink. The manager owns triggers, budgets, and recovery;
+`CompactionPipeline` runs L1–L3 and `LlmCompactService` generates L4 candidates.
+Projection converts formats; compaction reduces content.
+
+L3 separates candidate selection from application: `_l3_candidates` filters and
+orders results; `_apply_l3` decides whether the remaining budget permits stopping
+before optional candidates. Being below target alone does not skip required
+levels, duplicate/stale cleanup, or oversized individual results.
+
 ## A Concrete Long-Session Story
 
 1. The agent reads a source file and runs a large test command.
@@ -138,9 +157,12 @@ L4 when required. An automatic-compaction circuit breaker prevents expensive
 repeated automatic failures; manual, task-boundary, and overflow recovery are
 not silently skipped by that breaker.
 
-The default budget uses 95% of the model window, subtracts output reserve for input capacity, then places the high watermark at 90% and the low watermark at 72% of that capacity. A missing model window is explicitly reported as an assumed 32,768, not a second fixed AUTO path.
+The default budget uses 95% of the model window, subtracts output reserve for input capacity, then places the high watermark at 90% and the low watermark at 72% of that capacity. A missing model window uses 200,000 from `budget_defaults.py` and reports its source as `assumed`; an explicit window reports `configured`.
 
-Provider tokenizers, oversized-artifact externalization, and demand-loaded MCP schemas are not part of the current implementation.
+Token estimates approximate character counts; provider tokenizers and
+oversized-artifact externalization are not implemented. Demand-loaded MCP tools
+are managed by `mcp/search.py` and `AgentLoop` as tool-catalog behavior, separate
+from context compaction.
 
 ## Source Map
 

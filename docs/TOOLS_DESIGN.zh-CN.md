@@ -13,17 +13,17 @@ create_builtin_registry(project_root)
   -> Tool(definition, executor, permission spec)
   -> create_session_tool_registry 注入 task_boundary/retrieve_archive
   -> PermissionAwareToolRegistry 包装 dispatch
-  -> AgentLoop 将 registry.definitions() 放进 ChatRequest.tools
+  -> AgentLoop 筛选当前可用的工具声明，放进 ChatRequest.tools
   -> provider 返回 ToolCall(name="view", arguments=...)
-  -> registry 预检/执行 -> ToolResult
-  -> AgentLoop 写 role=tool 结果，再请求模型
+  -> ToolExecutor 通过 session 预检权限，调度 registry 执行 -> ToolResult
+  -> ToolExecutor 记录 role=tool 结果，AgentLoop 再请求模型
 ```
 
 JSON Schema 经 `ChatRequest.tools` 发送，由 provider adapter 转成各家原生 `tools` 格式。它不会追加进 system prompt，既不会重复占对话 token，也绝不是安全边界。
 
 ## 核心契约
 
-`tools/types.py` 定义具体数据类：
+`ToolDefinition` 定义在 `providers/types.py`；`tools/types.py` 定义工具及结果的数据类：
 
 | 类型 | 含义 |
 | --- | --- |
@@ -32,7 +32,22 @@ JSON Schema 经 `ChatRequest.tools` 发送，由 provider adapter 转成各家�
 | `ToolResult` | 统一的 `name`、`ok`、`content`、`data`、`error` |
 | `ToolPermissionSpec` | 如何从真实 arguments 推导权限请求 |
 
-executor 返回 `ToolResult`，而不是让异常穿透 agent loop。因此未知工具、参数不合法和执行失败都能回给模型，并且 session 可回放。
+executor 返回 `ToolResult`；`ToolRegistry.execute` 还会把未知工具、参数错误和执行异常
+转换成失败结果。因此模型能读取失败原因，主循环也能保存这次调用的结果。
+
+### 两个同名的 ToolExecutor
+
+`tools.types.ToolExecutor` 是函数协议，说明 `Tool.executor` 应接收参数并返回 `ToolResult`。
+`agent.tool_execution.ToolExecutor` 是运行时调度器，负责整批工具的校验、权限暂停/恢复、
+并行执行和结果记录。前者描述一个函数，后者安排这些函数何时执行。
+
+从执行入口往下读时，按以下职责区分：
+
+| 对象 | 负责什么 |
+| --- | --- |
+| `agent.tool_execution.ToolExecutor` | 决定执行、暂停、并行或转后台，并记录结果 |
+| `PermissionAwareToolRegistry` | 根据工具声明构造权限请求，交给 `PermissionManager` 裁决 |
+| `ToolRegistry` | 按名字找到工具，调用 `Tool.executor`，把异常转换为失败结果 |
 
 ## Registry 的创建与包装
 
@@ -48,7 +63,10 @@ executor 返回 `ToolResult`，而不是让异常穿透 agent loop。因此未�
 
 ## 执行规则
 
-`ToolRegistry.execute(name, arguments)` 只解析一个名字并规范化失败；`PermissionAwareToolRegistry.execute` 先由 tool spec 生成 `PermissionRequest`，再拿 allow/ask/deny。`ASK` 只返回结构化信号、不执行；`AgentLoop` 存下原调用，用户回答后恢复。
+`ToolRegistry.execute(name, arguments)` 查找并执行工具，同时规范化失败。
+`PermissionAwareToolRegistry.preflight` 生成权限请求并获得 allow/ask/deny，预检本身不执行工具。
+主循环经 `ToolExecutor` 调度时，`ASK` 会保存原调用并暂停，用户回答后再恢复。
+直接调用权限包装的 `execute` 时，`ASK` 返回结构化确认信号，同样不会执行工具。
 
 支持的直接修改到达 executor 前，`ToolExecutor` 还会通过 `tools.review.build_prewrite_review` 构造可信 diff 与文件快照。这是控制面行为，不是模型可见工具；覆盖 `write`、`edit`、`apply_patch`、`delete`，刻意排除无法安全预计算影响的 `shell`。恢复 Apply 时会再次校验快照，并始终执行本地保留的原始 `ToolCall`。
 

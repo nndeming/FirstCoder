@@ -15,10 +15,9 @@ sentence in a prompt.
 
 Read in this order if you are new to the codebase:
 
-1. [Architecture](ARCHITECTURE.md) — package boundaries, dependency rules,
-   and the coupling cleanup.
-2. [Codebase Reading Guide](CODEBASE_READING_GUIDE.md) — a map and a first
-   end-to-end trace.
+1. [Codebase Reading Guide](CODEBASE_READING_GUIDE.md) — trace a direct answer,
+   a tool call, and a permission pause before exploring the full architecture.
+2. [Architecture](ARCHITECTURE.md) — package boundaries and dependency rules.
 3. [CLI / TUI Design](CLI_TUI_DESIGN.md) — process startup, dependency
    assembly, commands, streaming, and UI state.
 4. [Agent Loop Guardrails](AGENT_LOOP_GUARDRAILS.md) — the transaction that

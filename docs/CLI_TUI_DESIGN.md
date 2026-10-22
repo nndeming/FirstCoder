@@ -66,6 +66,29 @@ Package boundaries and dependency rules live in [ARCHITECTURE.md](ARCHITECTURE.m
 | `UserInputRequest` | `firstcoder.runtime.user_input` (permissions / `ask_user`) | interactive UI | explicit pause/resume contract shared outside `agent/` |
 | `UserAttachment` | composer/paste handler | runner/session | a staged path or clipboard image sent with a user turn |
 
+## Start with the chat entry point
+
+`AgentChatRunner` in `app/runtime.py` is ordered by chat entry points,
+execution preparation, result handling, runtime updates, and cancellation.
+Start with `arun_user_turn`: prepare a loop, execute the turn in a worker,
+unregister the active cancellation token in `finally`, and prepare display output.
+
+The CLI calls `run_user_turn`, which runs the async entry point through
+`asyncio.run`; the TUI awaits it directly. `use_streaming` independently selects
+ordinary or streaming provider requests.
+
+Permission answers use `aresume_with_user_input`. `_resume_turn` reuses the
+paused loop where possible, preserving budgets while rebinding cancellation
+and event handlers. `_finish_agent_result` updates pending input, the paused
+loop, stream events, and display lines together. `_create_loop` lists the full
+set of dependencies as keyword arguments.
+
+`app.ports.ContextManagerLike` re-exports the interface from `agent.ports`.
+The chat interface specifies `ChatResponse` for both sync and async methods.
+The named task-classification methods remain on `AgentLoop`: benchmark subclasses
+override them to control experimental arms. Their short bodies are extension
+points rather than disposable forwarding helpers.
+
 ## User-Facing Modes
 
 `firstcoder/cli.py` routes these modes:

@@ -1,20 +1,17 @@
-"""TUI 运行期 session 状态和聊天入口。
+"""把 CLI / TUI 输入交给 AgentLoop，并整理这一轮的界面输出。
 
-Textual widget 只负责显示和输入；这里把“当前 session 可被 resume 替换”和“普通输入
-调用 AgentLoop”封成很薄的一层，避免 UI 直接持有 agent 编排细节。
+先读 AgentChatRunner 的 run_user_turn / arun_user_turn，再看权限恢复入口。
+两条路径都按“准备 loop → 在线程里执行 → 整理结果”推进；模型和工具的循环
+仍由 AgentLoop 负责。CurrentSessionState 保存可被 /resume 替换的当前会话。
 """
 
 from __future__ import annotations
-
-from firstcoder.input.attachments import UserAttachment
-from firstcoder.utils.text import ellipsis_truncate
 
 import asyncio
 import json
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
 
 import anyio
 
@@ -23,17 +20,21 @@ from firstcoder.tools.hidden import HIDDEN_TOOL_STATUS_NAMES
 from firstcoder.agent.loop import AgentLoop, ToolExecutionEvent
 from firstcoder.agent.background import BackgroundJobManager
 from firstcoder.agent.loop_limits import AgentLoopLimits
+from firstcoder.agent.ports import ContextManagerLike
 from firstcoder.agent.runtime_capabilities import AgentRuntimeCapabilities
 from firstcoder.agent.session import AgentSession
-from firstcoder.agent.user_input import AgentTurnStatus
+from firstcoder.agent.user_input import AgentTurnResult, AgentTurnStatus
 from firstcoder.runtime.user_input import UserInputRequest
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState
+from firstcoder.context.token_budget import ContextBudget
+from firstcoder.input.attachments import UserAttachment
 from firstcoder.permissions.types import PermissionMode
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.types import ChatResponse, ChatStreamEvent, MainRequestOptions
 from firstcoder.tools.types import Tool
+from firstcoder.utils.text import ellipsis_truncate
 
 
 @dataclass(slots=True)
@@ -83,7 +84,7 @@ class AgentChatRunner:
     tools: list[Tool] | None = None
     tools_provider: Callable[[], list[Tool]] | None = None
     context_builder: ContextBuilder | None = None
-    context_manager: Any | None = None
+    context_manager: ContextManagerLike | None = None
     limits: AgentLoopLimits | None = None
     use_streaming: bool = False
     request_options: MainRequestOptions = field(default_factory=MainRequestOptions)
@@ -105,60 +106,72 @@ class AgentChatRunner:
     _active_cancellation_token: CancellationToken | None = None
     _pending_permission_loop: AgentLoop | None = None
 
-    def set_provider(self, provider: ChatProvider, *, use_streaming: bool) -> None:
-        self.set_model(
-            provider,
-            request_options=MainRequestOptions(),
-            context_window=None,
-            use_streaming=use_streaming,
-        )
+    # 聊天入口：CLI 使用同步方法，TUI await 异步方法。
 
-    def set_model(
+    def run_user_turn(
         self,
-        provider: ChatProvider,
+        content: str,
         *,
-        request_options: MainRequestOptions,
-        context_window: int | None,
-        use_streaming: bool,
-    ) -> None:
-        self.provider = provider
-        self.request_options = request_options
-        self.context_window = context_window
-        self.use_streaming = use_streaming
-        self.last_stream_events = []
+        attachments: list[UserAttachment] | None = None,
+    ) -> ChatResponse:
+        """同步聊天入口, 供 CLI 等非 Textual 调用方使用。"""
 
-    def sync_pending_input_from_current_session(self) -> UserInputRequest | None:
-        self.last_pending_input = self.current_session.session.pending_permission_input_request()
-        return self.last_pending_input
+        return asyncio.run(self.arun_user_turn(content, attachments=attachments))
 
-    def add_guidance(self, content: str) -> None:
-        text = content.strip()
-        if not text:
-            return
-        with self._guidance_lock:
-            self.pending_guidance.append(text)
+    async def arun_user_turn(
+        self,
+        content: str,
+        *,
+        attachments: list[UserAttachment] | None = None,
+    ) -> ChatResponse:
+        """异步聊天入口。
 
-    def drain_guidance(self) -> list[str]:
-        with self._guidance_lock:
-            guidance = list(self.pending_guidance)
-            self.pending_guidance.clear()
-        return guidance
+        Textual 已经运行在 asyncio event loop 中，所以 UI 需要 await 这个入口；只有这里
+        才会在 `use_streaming=True` 时消费 provider 的内部 stream event。
+        """
 
-    def cancel_current_turn(self) -> None:
-        with self._cancellation_lock:
-            if self._active_cancellation_token is not None:
-                self._active_cancellation_token.cancel()
+        # 记录消息起点，结束后只展示本轮新增内容。
+        before_count, cancellation_token, loop = self._start_turn(streaming=self.use_streaming)
+        try:
+            # 在线程里创建独立事件循环，避免模型准备和工具执行阻塞界面。
+            result = await anyio.to_thread.run_sync(
+                asyncio.run,
+                loop.run_user_turn(
+                    content,
+                    attachments=attachments,
+                    streaming=self.use_streaming,
+                ),
+            )
+        finally:
+            # 注销当前活跃令牌
+            self._finish_cancellable_turn(cancellation_token)
+        return self._finish_agent_result(before_count, loop, result)
 
-    def _begin_cancellable_turn(self) -> CancellationToken:
-        token = CancellationToken()
-        with self._cancellation_lock:
-            self._active_cancellation_token = token
-        return token
+    def resume_with_user_input(self, request_id: str, answer: str) -> ChatResponse:
+        """恢复等待中的权限确认。
 
-    def _finish_cancellable_turn(self, token: CancellationToken) -> None:
-        with self._cancellation_lock:
-            if self._active_cancellation_token is token:
-                self._active_cancellation_token = None
+        普通 `ask_user` 后续仍走新的用户消息；权限确认必须先补齐原 tool_call 的
+        tool_result, 所以 UI 通过这个入口把用户选择交回 agent loop。
+        """
+
+        return asyncio.run(self.aresume_with_user_input(request_id, answer))
+
+    async def aresume_with_user_input(self, request_id: str, answer: str) -> ChatResponse:
+        before_count, cancellation_token, loop = self._resume_turn(streaming=self.use_streaming)
+        try:
+            result = await anyio.to_thread.run_sync(
+                asyncio.run,
+                loop.resume_with_user_input(
+                    request_id,
+                    answer,
+                    streaming=self.use_streaming,
+                ),
+            )
+        finally:
+            self._finish_cancellable_turn(cancellation_token)
+        return self._finish_agent_result(before_count, loop, result)
+
+    # 准备执行：新对话创建 loop，权限确认优先复用暂停的 loop。
 
     def _start_turn(self, *, streaming: bool = False) -> tuple[int, CancellationToken, AgentLoop]:
         before_count = len(self.current_session.rebuild_view().messages)
@@ -194,103 +207,6 @@ class AgentChatRunner:
                 loop.clear_stream_events()
         return before_count, token, loop
 
-    def _remember_pending_permission_loop(self, loop: AgentLoop) -> None:
-        self._pending_permission_loop = loop if self.current_session.session.pending_permission_execution is not None else None
-
-    def _refresh_turn_output(self, before_count: int, loop: AgentLoop) -> None:
-        self.last_stream_events = list(loop.last_stream_events)
-        messages = self.current_session.rebuild_view().messages[before_count:]
-        self.last_display_lines = _display_lines_from_messages(messages)
-
-    def run_user_turn(
-        self,
-        content: str,
-        *,
-        attachments: list[UserAttachment] | None = None,
-    ) -> ChatResponse:
-        """同步聊天入口, 供 CLI 等非 Textual 调用方使用。"""
-
-        return asyncio.run(self.arun_user_turn(content, attachments=attachments))
-
-    def resume_with_user_input(self, request_id: str, answer: str) -> ChatResponse:
-        """恢复等待中的权限确认。
-
-        普通 `ask_user` 后续仍走新的用户消息；权限确认必须先补齐原 tool_call 的
-        tool_result, 所以 UI 通过这个入口把用户选择交回 agent loop。
-        """
-
-        return asyncio.run(self.aresume_with_user_input(request_id, answer))
-
-    async def arun_user_turn(
-        self,
-        content: str,
-        *,
-        attachments: list[UserAttachment] | None = None,
-    ) -> ChatResponse:
-        """异步聊天入口。
-
-        Textual 已经运行在 asyncio event loop 中，所以 UI 需要 await 这个入口；只有这里
-        才会在 `use_streaming=True` 时消费 provider 的内部 stream event。
-        """
-
-        # before_count: 记录本轮开始前会话里有多少条消息——本轮结束后用它切出"新增的消息"用于展示
-        # cancellation_token: 取消令牌，Esc 键可以随时打断这轮(_begin_cancellable_turn 把它登记为"当前活跃令牌")
-        # loop: 创建本轮专用的 AgentLoop 实例(agent 循环的执行容器)
-        before_count, cancellation_token, loop = self._start_turn(streaming=self.use_streaming)
-        try:
-            # 跨线程执行(此处使用anyio第三方异步编程库)
-            result = await anyio.to_thread.run_sync(
-                _run_coroutine_in_thread,
-                loop.run_user_turn(
-                    content,
-                    attachments=attachments,
-                    streaming=self.use_streaming,
-                ),
-            )
-        finally:
-            # 注销当前活跃令牌
-            self._finish_cancellable_turn(cancellation_token)
-        return self._finish_agent_result(before_count, loop, result)
-
-    async def aresume_with_user_input(self, request_id: str, answer: str) -> ChatResponse:
-        before_count, cancellation_token, loop = self._resume_turn(streaming=self.use_streaming)
-        try:
-            result = await anyio.to_thread.run_sync(
-                _run_coroutine_in_thread,
-                loop.resume_with_user_input(
-                    request_id,
-                    answer,
-                    streaming=self.use_streaming,
-                ),
-            )
-        finally:
-            self._finish_cancellable_turn(cancellation_token)
-        return self._finish_agent_result(before_count, loop, result)
-
-    def _finish_agent_result(self, before_count: int, loop: AgentLoop, result) -> ChatResponse:
-        # 将pending_input写入到AgentChatRunner的属性上
-        self.last_pending_input = result.pending_input
-        # 仅当本轮因权限确认被暂停时, 把这个暂停中的loop实例留档, 供恢复对话时复用其全部中途状态, 否则清空
-        self._remember_pending_permission_loop(loop)
-        # 刷新TUI
-        self._refresh_turn_output(before_count, loop)
-        if result.response is not None:
-            if result.response.content and not self.last_display_lines:
-                self.last_display_lines.append(result.response.content)
-            return result.response
-        # 准备TUI显示, 等待用户输入
-        return self._waiting_for_input_response(result.pending_input)
-
-    def _current_tools(self) -> list[Tool] | None:
-        """每次建 loop 时解析一次工具集, 让 session registry 看到的也是同一份列表。"""
-
-        return self.tools_provider() if self.tools_provider is not None else self.tools
-
-    def context_budget(self, view):
-        # 无历史 loop 时为算预算临时建一个, 不登记进 self.loops, 避免泄漏
-        loop = self.loops[-1] if self.loops else self._create_loop(CancellationToken(), track=False)
-        return loop.context_budget_for_view(view)
-
     def _create_loop(
         self,
         cancellation_token: CancellationToken,
@@ -298,29 +214,48 @@ class AgentChatRunner:
         streaming: bool = False,
         track: bool = True,
     ) -> AgentLoop:
-        kwargs = {
-            "session": self.current_session.session,
-            "provider": self.provider,
-            "request_options": self.request_options,
-            "classifier_provider": self.classifier_provider,
-            "classifier_request_options": self.classifier_request_options,
-            "context_window": self.context_window,
-            "tools": self._current_tools(),
-            "context_builder": self.context_builder,
-            "context_manager": self.context_manager,
-            "limits": self.limits,
-            "tool_event_handler": self.tool_event_handler,
-            "guidance_provider": self.drain_guidance,
-            "cancellation_token": cancellation_token,
-            "background_manager": self.background_manager,
-            "runtime_capabilities": self.runtime_capabilities,
-        }
-        if streaming:
-            kwargs["stream_event_handler"] = self.stream_event_handler
-        loop = AgentLoop(**kwargs)
+        """每次创建时读取最新工具目录；直接列出交给主循环的依赖。"""
+
+        loop = AgentLoop(
+            session=self.current_session.session,
+            provider=self.provider,
+            request_options=self.request_options,
+            classifier_provider=self.classifier_provider,
+            classifier_request_options=self.classifier_request_options,
+            context_window=self.context_window,
+            tools=self.tools_provider() if self.tools_provider is not None else self.tools,
+            context_builder=self.context_builder,
+            context_manager=self.context_manager,
+            limits=self.limits,
+            tool_event_handler=self.tool_event_handler,
+            guidance_provider=self.drain_guidance,
+            cancellation_token=cancellation_token,
+            background_manager=self.background_manager,
+            runtime_capabilities=self.runtime_capabilities,
+            stream_event_handler=self.stream_event_handler if streaming else None,
+        )
         if track:
             self.loops.append(loop)
         return loop
+
+    # 整理结果：更新暂停现场、事件和本轮新增的显示行。
+
+    def _finish_agent_result(self, before_count: int, loop: AgentLoop, result: AgentTurnResult) -> ChatResponse:
+        """保留权限暂停现场，并从本轮新增消息生成显示内容。"""
+
+        self.last_pending_input = result.pending_input
+        self._pending_permission_loop = (
+            loop if self.current_session.session.pending_permission_execution is not None else None
+        )
+        self.last_stream_events = list(loop.last_stream_events)
+        messages = self.current_session.rebuild_view().messages[before_count:]
+        self.last_display_lines = _display_lines_from_messages(messages)
+        if result.response is not None:
+            if result.response.content and not self.last_display_lines:
+                self.last_display_lines.append(result.response.content)
+            return result.response
+        # 准备TUI显示, 等待用户输入
+        return self._waiting_for_input_response(result.pending_input)
 
     def _waiting_for_input_response(self, pending: UserInputRequest | None) -> ChatResponse:
         """为"等待用户输入"伪造一个 ChatResponse。
@@ -340,6 +275,70 @@ class AgentChatRunner:
             self.last_display_lines.append(response.content)
         return response
 
+    # 运行中更新：模型、会话、预算和用户补充说明。
+
+    def set_provider(self, provider: ChatProvider, *, use_streaming: bool) -> None:
+        self.set_model(
+            provider,
+            request_options=MainRequestOptions(),
+            context_window=None,
+            use_streaming=use_streaming,
+        )
+
+    def set_model(
+        self,
+        provider: ChatProvider,
+        *,
+        request_options: MainRequestOptions,
+        context_window: int | None,
+        use_streaming: bool,
+    ) -> None:
+        self.provider = provider
+        self.request_options = request_options
+        self.context_window = context_window
+        self.use_streaming = use_streaming
+        self.last_stream_events = []
+
+    def sync_pending_input_from_current_session(self) -> UserInputRequest | None:
+        self.last_pending_input = self.current_session.session.pending_permission_input_request()
+        return self.last_pending_input
+
+    def context_budget(self, view: SessionView) -> ContextBudget:
+        # 无历史 loop 时为算预算临时建一个, 不登记进 self.loops, 避免泄漏
+        loop = self.loops[-1] if self.loops else self._create_loop(CancellationToken(), track=False)
+        return loop.context_budget_for_view(view)
+
+    def add_guidance(self, content: str) -> None:
+        text = content.strip()
+        if not text:
+            return
+        with self._guidance_lock:
+            self.pending_guidance.append(text)
+
+    def drain_guidance(self) -> list[str]:
+        with self._guidance_lock:
+            guidance = list(self.pending_guidance)
+            self.pending_guidance.clear()
+        return guidance
+
+    # 取消：登记活跃令牌，执行结束后撤销登记。
+
+    def cancel_current_turn(self) -> None:
+        with self._cancellation_lock:
+            if self._active_cancellation_token is not None:
+                self._active_cancellation_token.cancel()
+
+    def _begin_cancellable_turn(self) -> CancellationToken:
+        token = CancellationToken()
+        with self._cancellation_lock:
+            self._active_cancellation_token = token
+        return token
+
+    def _finish_cancellable_turn(self, token: CancellationToken) -> None:
+        with self._cancellation_lock:
+            if self._active_cancellation_token is token:
+                self._active_cancellation_token = None
+
 
 def _display_lines_from_messages(messages: list[AgentMessage]) -> list[str]:
     """把一轮新增事实压成 TUI 可读的短行。
@@ -355,12 +354,6 @@ def _display_lines_from_messages(messages: list[AgentMessage]) -> list[str]:
         elif message.role == "tool":
             lines.extend(_tool_lines(message.parts))
     return lines
-
-
-def _run_coroutine_in_thread(coro):
-    """在 worker 线程里跑独立 asyncio.run: Textual 占着主事件循环, AgentLoop 的协程
-    只能在自己的线程事件循环里执行。"""
-    return asyncio.run(coro)
 
 
 def _assistant_lines(parts: list[MessagePart]) -> list[str]:

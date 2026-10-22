@@ -59,8 +59,9 @@ def create_session_tool_registry(
 ) -> ToolRegistryLike:
     """创建单个会话专用的工具注册表。
 
-    `task_boundary` 依赖当前会话的 `SessionRuntimeState`，不能放进无状态默认工具集。
-    这个工厂集中处理会话级注入，后续权限、确认策略也可以在这里包一层。
+    `task_boundary` 绑定当前会话的运行期状态；任务规划、技能加载和归档取回工具
+    按传入的 store/writer、skill_catalog、archive_root 装配。
+    提供 permission_manager 时，最终返回 PermissionAwareToolRegistry 权限包装。
     """
 
     state = runtime_state or SessionRuntimeState(session_id=session_id)

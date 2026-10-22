@@ -1,7 +1,7 @@
 """`task_boundary` 工具。
 
-这个工具只让模型提交任务边界判断，不让模型提交 hash。hash 由 context 层根据
-session_id 和 basis_message_id 稳定生成，避免不同模型输出格式不一致。
+这是专用任务分类器使用的内部记账工具，不向主模型暴露。调用方只提交边界判断，
+hash 由 context 层根据 session_id 和 basis_message_id 稳定生成。
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ def create_task_boundary_tool(
     """创建任务边界工具。
 
     `state` 是当前会话的运行期状态，所以这个工具不适合放进无状态的默认工具注册。
-    agent loop 后续应在创建单次会话工具集时注入。
+    create_session_tool_registry 在组装当前会话的工具集时注入它。
     """
 
     boundary_service = service or TaskBoundaryService(required_stable_count=required_stable_count)

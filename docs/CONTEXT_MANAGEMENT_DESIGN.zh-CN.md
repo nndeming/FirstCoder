@@ -23,6 +23,21 @@ append-only JSONL event
 
 `system_meta` 是内部状态，故意不会作为普通对话消息投影；稳定 system prefix 由 session 另外提供。
 
+## 先按两个入口读源码
+
+先读 `ContextBuilder.build_provider_messages`，理解模型这一轮实际收到什么。
+它与 `projected_tool_result_part_ids` 共用 `_tail_messages`：选取 checkpoint 后的尾部，
+合并特定的相邻重复调用，再检查调用与结果是否配对。前者生成消息，后者返回用于
+成功消费记账的原始工具结果 part ID；归档占位符不会被当作新的原始结果记账。
+
+再读 `ContextWindowManager.compact_if_needed`，理解什么时候需要缩小这份上下文。
+manager 决定是否触发、目标预算和失败处理，`CompactionPipeline` 执行 L1–L3，
+`LlmCompactService` 生成 L4 摘要候选。投影负责转换格式，压缩负责减少内容。
+
+L3 分成“筛选候选”和“应用候选”两个步骤：`_l3_candidates` 只筛选并排序，
+`_apply_l3` 才根据剩余预算判断是否继续处理可选候选。因此，整体已低于目标时，
+仍可能要完成指定层级、清理重复或过期结果，或缩小单条超大输出。
+
 ## 一个长会话故事
 
 1. agent 读了源码，并运行一条很长的测试命令。
@@ -102,9 +117,10 @@ L3 用有界 placeholder 替换选中的 tool result，绝不移除整个 tool t
 
 manager 先跑确定性层，记录结果，必要时才调用 L4。自动压缩 circuit breaker 会防止昂贵失败反复触发；manual、task-boundary、overflow recovery 不会被它静默跳过。
 
-默认预算以模型窗口 95% 为可用窗口，扣除输出预留后得到输入容量；高水位为输入容量的 90%，低水位为 72%。未配置模型窗口时明确使用 assumed 32,768，而不是暗藏另一套固定 AUTO 路径。
+默认预算以模型窗口 95% 为可用窗口，扣除输出预留后得到输入容量；高水位为输入容量的 90%，低水位为 72%。未配置模型窗口时使用 `budget_defaults.py` 中的 200,000，并将来源标为 `assumed`；配置了窗口大小则标为 `configured`。
 
-当前实现不包含 provider tokenizer、oversized artifact 外置或 MCP schema 按需暴露；这些能力不能当作现有压缩保障。
+token 数按字符数近似估算，尚未接入 provider tokenizer，也没有 oversized artifact 外置机制。
+MCP 工具的按需发现与暴露由 `mcp/search.py` 和 `AgentLoop` 管理，属于工具目录管理，不属于上下文压缩。
 
 ## 源码地图
 

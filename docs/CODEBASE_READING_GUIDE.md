@@ -11,6 +11,105 @@ end-to-end traces, exercises, and debugging recipes.
 
 ---
 
+## Start with one turn
+
+Open [AgentLoop](../firstcoder/agent/loop.py) at `run_user_turn`. Treat its
+constructor as the assembled runtime on your first pass. Methods are grouped by
+execution stage, with synchronous and streaming paths next to each other.
+
+Learn four data objects first: `ChatRequest` goes to the model, `ChatResponse`
+comes back, `ToolCall` requests a local operation, and `ToolResult` records its
+outcome. See [provider types](../firstcoder/providers/types.py) and
+[tool types](../firstcoder/tools/types.py).
+
+### Pass 1: a direct answer
+
+```text
+run_user_turn(streaming=False)
+  → _run_user_turn_sync → _run_user_turn_sync_impl
+      save user input and identify the current task
+  → _run_tool_loop_interactive
+      _complete_once_with_recovery → _complete_once → provider.complete
+      no tool_calls: return from the tool loop
+  → _complete_turn: save the final answer and return AgentTurnResult
+```
+
+The public entry point is async even for ordinary requests; it runs synchronous
+work in a worker thread. With `streaming=True`, the corresponding streaming
+path consumes `provider.astream`. Tools execute only after a complete response
+arrives. On this pass, follow the purpose of classification, compaction and
+background notifications without tracing their implementations.
+
+### Pass 2: one tool call
+
+Read `_continue_tool_loop_from_response`, then
+[ToolExecutor.execute_interactive](../firstcoder/agent/tool_execution.py):
+
+```text
+save assistant tool_calls → check and execute tools → save tool results
+  → request another model response → repeat while there are tool_calls
+  → run completion checks and save the final answer
+```
+
+Follow [ToolRegistry.execute](../firstcoder/tools/registry.py) into one concrete
+tool such as [git_status](../firstcoder/tools/git_status.py). The saved call
+must precede its result; `tool_call_id` pairs them.
+
+### Pass 3: permission pause and resume
+
+`ToolExecutor` stores `PendingPermissionExecution`; the loop returns
+`WAITING_FOR_USER_INPUT`. The UI supplies the answer through
+`resume_with_user_input`. The loop validates the request ID and keeps the
+original turn budget. `ToolExecutor.resume_permission` (or its async counterpart)
+checks the answer and preview, executes the saved call or creates a denial
+result, then records results for that call and the skipped batch tail. The loop
+can now request another model response.
+
+The saved local call is authoritative. The answer is not inserted as a new
+ordinary user message between a tool call and its result. Task-plan and
+completion checks may also re-enter the tool loop; they live together in the
+completion-check section.
+
+After installing development dependencies, run the matching regression cases:
+
+```sh
+.venv/bin/python -m pytest tests/test_agent_context_loop.py -q -k 'permission_resume_preserves_results_events_and_budget'
+```
+
+They cover ordinary and streaming approval, denial, stale previews, review-only
+confirmation, unknown answers, event order, budgets, and replay protection.
+
+### Then follow the UI into the loop
+
+Read [AgentChatRunner](../firstcoder/app/runtime.py) after the paths above.
+Its entry points have the same names as those on `AgentLoop`: the runner
+accepts CLI/TUI input and prepares display output; the loop coordinates models
+and tools.
+
+```text
+CLI: runner.run_user_turn → runner.arun_user_turn
+TUI: await runner.arun_user_turn
+  → _start_turn: remember the message boundary, register cancellation, create loop
+  → asyncio.run(loop.run_user_turn(...)) in a worker thread
+  → finally: unregister the active cancellation token
+  → _finish_agent_result: retain a permission pause and update events/display lines
+```
+
+Sync/async entry points and ordinary/streaming requests are independent choices.
+The caller chooses the entry point; `use_streaming` selects the provider path.
+Permission answers use `resume_with_user_input` / `aresume_with_user_input`.
+`_resume_turn` reuses the paused loop, preserving budgets while rebinding the
+cancellation token and event handlers. `_create_loop` lists its dependencies
+directly as keyword arguments.
+
+```sh
+.venv/bin/python -m pytest tests/test_app_runtime.py -q -k entries_preserve_permission_resume_state
+```
+
+Use the maps and debugging recipes below after these paths.
+
+---
+
 ## 1. What You Will Be Able To Do
 
 | After… | You should be able to… |

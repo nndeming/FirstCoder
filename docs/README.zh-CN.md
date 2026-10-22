@@ -11,8 +11,8 @@
 
 第一次读代码，按下面顺序走最省力：
 
-1. [架构说明](ARCHITECTURE.zh-CN.md)：包边界、依赖规则与耦合清理结果。
-2. [代码阅读指南](CODEBASE_READING_GUIDE.zh-CN.md)：先得到目录地图和一条完整执行链。
+1. [代码阅读指南](CODEBASE_READING_GUIDE.zh-CN.md)：先跟读直接回答、工具调用、权限确认三条真实路径。
+2. [架构说明](ARCHITECTURE.zh-CN.md)：再了解包边界和依赖规则。
 3. [CLI / TUI 设计](CLI_TUI_DESIGN.zh-CN.md)：理解启动、装配、命令、流式输出和界面状态。
 4. [Agent 主循环护栏](AGENT_LOOP_GUARDRAILS.zh-CN.md)：理解一条用户消息如何变成模型调用与工具结果。
 5. [多模态输入设计](MULTIMODAL_INPUT_DESIGN.zh-CN.md)：理解附件暂存、持久化和 provider 投影。

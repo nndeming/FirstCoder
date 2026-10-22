@@ -42,7 +42,7 @@ Compared with larger projects like OpenCode, FirstCoder is intentionally smaller
 | Dimension | FirstCoder | Larger projects like OpenCode |
 | --- | --- | --- |
 | Primary goal | Make agent internals readable and teachable | Deliver a broader production-style coding-agent platform |
-| Codebase shape | Roughly 25k lines of Python under `firstcoder/` (174 files) | Roughly 575k lines of TS/JS across a much larger multi-surface codebase |
+| Codebase shape | Roughly 32k lines of Python under `firstcoder/` (199 files, including comments and blank lines) | Roughly 575k lines of TS/JS across a much larger multi-surface codebase |
 | Engineering tradeoff | Drops some extra platform surface area to stay inspectable | Accepts more complexity to support a broader product surface |
 | Best fit | Learning, modification, interview prep, portfolio projects, and local experimentation | Users who want a larger, more full-surface coding-agent environment |
 

@@ -133,7 +133,7 @@ class ContextWindowManager:
         # 当前连续失败次数
         auto_failure_count_before = request.runtime_state.auto_compact_failure_count
 
-        # 目前实现比较简陋, 就比较watermark
+        # 普通 AUTO 只由输入高水位触发；其余触发类型可以主动请求压缩。
         decision = evaluate_context_triggers(
             request.view,
             self.config,
@@ -200,7 +200,7 @@ class ContextWindowManager:
         after_tokens = request.estimate_budget(programmatic.view).input_tokens
 
         if trigger == ContextWindowTrigger.AUTO and programmatic.event.noop and after_tokens < target_tokens:
-            # AUTO自动触发 + nnop + after_tokens达到目标
+            # 本次无实际改动且已低于目标，记录指纹以避免对同一视图重复空跑。
             request.runtime_state.last_no_effect_compaction_fingerprint = input_fingerprint
             SessionEventWriter(store=self.store, session_id=request.view.session_id).append_compaction_skipped(
                 trigger=trigger.value,
