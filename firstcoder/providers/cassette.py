@@ -52,8 +52,11 @@ from firstcoder.utils.json_utils import dumps_json
 
 CassetteMode = Literal["auto", "record", "replay", "off"]
 
+# 回放功能版本号
 CASSETTE_VERSION = 1
+# 环境变量名
 CASSETTE_MODE_ENV = "FIRSTCODER_CASSETTE_MODE"
+# 四种工作模式: "auto"(有文件就回放, 没有就录制), "record"(强制录制), "replay"(强制回放), "off"(不起作用)
 _VALID_MODES: tuple[str, ...] = ("auto", "record", "replay", "off")
 
 
@@ -92,6 +95,8 @@ def resolve_cassette_path(root: Path | str, name: str) -> Path:
     """把 cassette 名解析成 ``root`` 下的文件路径，拒绝路径穿越。
 
     允许 ``provider/scenario`` 式子路径；没有 ``.json`` 后缀时自动补上。
+
+    简而言之, 就是路径校验与规范化的工作
     """
 
     if not name or not name.strip():
@@ -220,13 +225,13 @@ class CassetteProvider(ChatProvider):
         path: Path | str,
         mode: CassetteMode | None = None,
     ) -> None:
-        self._inner = inner
-        self._path = Path(path)
-        self._mode = self._resolve_mode(mode)
-        self._interactions: list[_Interaction] = []
-        self._metadata: dict[str, Any] = {}
-        self._recorded = False
-        self._closed = False
+        self._inner = inner     # 被包在Cassetteprovider内的真实Provider, 后续CassetteProvider会通过_inner发起真实的模型请求
+        self._path = Path(path) # cassette文件的位置, record时往这里写, replay时从这里读
+        self._mode = self._resolve_mode(mode)   # 工作模式, 若为None则从环境变量读取
+        self._interactions: list[_Interaction] = [] # 交互列表, 每个_Interaction就是"一次请求+对应的响应"
+        self._metadata: dict[str, Any] = {} # cassette文件的元信息, 写进JSON的metadata字段: provider名、模型名、录制时间
+        self._recorded = False  # "本次有没有录制到新内容"的脏标记
+        self._closed = False    # 关闭标记, replay模式检查有没有被消费的交互, record模式触发save()
         if self._mode == "replay":
             self._interactions = self._load()
         elif self._mode == "record" and inner is None:
@@ -249,23 +254,28 @@ class CassetteProvider(ChatProvider):
     @property
     def capabilities(self):
         if self._inner is not None and hasattr(self._inner, "capabilities"):
-            return self._inner.capabilities
+            return self._inner.capabilities  # type: ignore[attr-defined]
         raise AttributeError("replay 模式没有 inner provider，capabilities 不可用")
 
     def complete(self, request: ChatRequest) -> ChatResponse:
         if self._mode == "replay":
+            # 获取当前request对应的回放interaction
             interaction = self._claim("complete", request)
             assert interaction.response is not None
             return response_from_dict(interaction.response)
         if self._mode == "record":
+            # 录制模式下, 就需要将request和response都保存下来
             assert self._inner is not None
+            # 调用内部的真实Provider获取response
             response = self._inner.complete(request)
             self._interactions.append(
                 _Interaction(kind="complete", request=request_to_dict(request), response=response_to_dict(response))
             )
+            # 标记本次有新增内容, 后续需要落盘
             self._recorded = True
             return response
         assert self._inner is not None
+        # 既不是replay也不是record模式, 就正常的交互
         return self._inner.complete(request)
 
     def astream(self, request: ChatRequest) -> AsyncIterator[ChatStreamEvent]:
@@ -360,6 +370,8 @@ class CassetteProvider(ChatProvider):
         return "replay" if self._path.exists() else "record"
 
     def _load(self) -> list[_Interaction]:
+        """将cassette文件从磁盘读入_interactions
+        """
         if not self._path.exists():
             raise CassetteMissingError(
                 f"cassette 不存在: {self._path}（CI 或 replay 模式下请先用 {CASSETTE_MODE_ENV}=record 本地录制并提交）"
@@ -381,11 +393,13 @@ class CassetteProvider(ChatProvider):
 
     def _claim(self, kind: Literal["complete", "stream"], request: ChatRequest) -> _Interaction:
         """认领第一条未消费且请求匹配的交互；不匹配时给出字段级 diff。"""
-
+        # 规范化当前request
         canonical = _canonical_request(request)
+        # 获取候选interaction
         candidates = [item for item in self._interactions if not item.consumed and item.kind == kind]
         for interaction in candidates:
             if json.dumps(interaction.request, ensure_ascii=False, sort_keys=True) == canonical:
+                # 匹配成功
                 interaction.consumed = True
                 return interaction
         diff = _diff_request(candidates[0].request, request_to_dict(request)) if candidates else "（cassette 中已无剩余同类交互）"
@@ -415,6 +429,8 @@ def _diff_request(expected: dict[str, Any], actual: dict[str, Any]) -> str:
 
 
 def _message_to_dict(message: ChatMessage) -> dict[str, Any]:
+    """将`ChatMessage`转为`dict`形式
+    """
     return {
         "role": message.role,
         "content": message.content,

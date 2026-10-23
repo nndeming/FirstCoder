@@ -81,7 +81,7 @@ PROVIDER_PRESETS: dict[str, ProviderPreset] = {
         base_url_env="OPENROUTER_BASE_URL",
         default_base_url="https://openrouter.ai/api/v1",
         extra_headers={
-            "HTTP-Referer": "https://github.com/Komor-Code/FirstCoder",
+            "HTTP-Referer": "https://github.com/nndeming/FirstCoder",
             "X-Title": "FirstCoder",
         },
     ),

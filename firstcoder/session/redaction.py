@@ -49,10 +49,16 @@ def redact_text(text: str, options: RedactionOptions | None = None) -> str:
 
 
 def _redact_secrets(text: str) -> str:
+    # 把文本里"键值对形式的密钥"的值部分替换成 [REDACTED_SECRET]
+    # 语法规则:
+    # 写法一: re.sub(正则, 替换逻辑, 文本)
+    # 写法二: 已编译的正则.sub(替换逻辑, 文本)
+    # 正则里 (?P<key>...) 这种写法叫命名分组：匹配的同时给这一段起个名字，之后用 match.group('key') 把这一段单独取出来
     text = _JSON_SECRET_RE.sub(lambda match: f"{match.group('prefix')}{match.group('quote')}{SECRET_VALUE}{match.group('quote')}", text)
     return _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group('key')}{match.group('sep')}{SECRET_VALUE}", text)
 
 
 def _redact_paths(text: str) -> str:
+    # 把文本里的本地绝对路径整段替换成 [REDACTED_PATH]
     text = _WINDOWS_PATH_RE.sub(PATH_VALUE, text)
     return _POSIX_PATH_RE.sub(PATH_VALUE, text)
