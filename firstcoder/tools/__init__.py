@@ -23,7 +23,7 @@ from firstcoder.tools.task_boundary import create_task_boundary_tool
 from firstcoder.tools.registry import ToolRegistry
 from firstcoder.tools.think import create_think_tool
 from firstcoder.tools.tree import create_tree_tool
-from firstcoder.tools.types import Tool, ToolExecutor, ToolResult
+from firstcoder.tools.types import Tool, ToolHandler, ToolResult
 from firstcoder.tools.view import create_view_tool
 from firstcoder.tools.web_search import create_web_search_tool
 from firstcoder.tools.write import create_write_tool
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "Tool",
-    "ToolExecutor",
+    "ToolHandler",
     "ToolRegistry",
     "ToolResult",
     "create_apply_patch_tool",

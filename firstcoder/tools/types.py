@@ -27,7 +27,7 @@ class ToolResult:
     error: str | None = None
 
 
-class ToolExecutor(Protocol):
+class ToolHandler(Protocol):
     """单个工具函数的调用协议，对应 Tool.executor。
 
     每个工具最终都是一个接收关键字参数、返回 `ToolResult` 的函数。
@@ -60,7 +60,7 @@ class Tool:
     """一个完整工具由模型可见 schema 和本地 executor 组成。"""
 
     definition: ToolDefinition
-    executor: ToolExecutor
+    executor: ToolHandler
     permission: ToolPermissionSpec | None = None
 
     @property

@@ -35,9 +35,9 @@ JSON Schema 经 `ChatRequest.tools` 发送，由 provider adapter 转成各家�
 executor 返回 `ToolResult`；`ToolRegistry.execute` 还会把未知工具、参数错误和执行异常
 转换成失败结果。因此模型能读取失败原因，主循环也能保存这次调用的结果。
 
-### 两个同名的 ToolExecutor
+### 工具函数协议与运行时调度器
 
-`tools.types.ToolExecutor` 是函数协议，说明 `Tool.executor` 应接收参数并返回 `ToolResult`。
+`tools.types.ToolHandler` 是函数协议，说明 `Tool.executor` 应接收参数并返回 `ToolResult`。
 `agent.tool_execution.ToolExecutor` 是运行时调度器，负责整批工具的校验、权限暂停/恢复、
 并行执行和结果记录。前者描述一个函数，后者安排这些函数何时执行。
 

@@ -42,9 +42,9 @@ An executor returns `ToolResult`. `ToolRegistry.execute` also converts unknown
 names, invalid arguments, and execution exceptions into failed results. The
 model can read the failure reason, and the loop can record the outcome.
 
-### The Two Types Named ToolExecutor
+### Tool Handler Protocol and Runtime Scheduler
 
-`tools.types.ToolExecutor` is the callable protocol for `Tool.executor`:
+`tools.types.ToolHandler` is the callable protocol for `Tool.executor`:
 accept arguments and return a `ToolResult`. `agent.tool_execution.ToolExecutor`
 is the runtime scheduler for batches, validation, permission pauses and resumes,
 parallel execution, and result recording. One describes a function; the other

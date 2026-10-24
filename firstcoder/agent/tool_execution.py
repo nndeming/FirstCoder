@@ -108,7 +108,7 @@ class _PermissionPreparation:
 class ToolExecutor:
     """调度一个会话中的工具批次，处理权限暂停/恢复、并行执行和结果记录。
 
-    具体工具函数保存在 Tool.executor 中；tools.types.ToolExecutor 只描述这些函数的签名。
+    具体工具函数保存在 Tool.executor 中；tools.types.ToolHandler 只描述这些函数的签名。
     本类负责安排何时调用它们，不实现读文件、写文件等具体操作。
     """
 
