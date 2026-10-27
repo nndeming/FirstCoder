@@ -175,6 +175,7 @@ class OpenAICompatibleProvider(ChatProvider):
             )
 
         params = self._build_completion_params(request)
+        # 默认是流式的
         params["stream"] = True
         diagnostics = ProviderDiagnostics()
         content_parts: list[str] = []

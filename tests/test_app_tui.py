@@ -1244,12 +1244,32 @@ async def test_firstcoder_app_pasting_plain_text_keeps_text_in_composer(monkeypa
     monkeypatch.setattr("firstcoder.app.tui.resolve_paste_attachments", lambda text: [])
     app = FirstCoderApp()
 
-    async with app.run_test():
+    async with app.run_test() as pilot:
         input_widget = app.query_one("#input", TextArea)
-        await input_widget._on_paste(events.Paste("explain this"))
+        await pilot.click("#input")
+        app.post_message(events.Paste("explain this"))
+        await pilot.pause()
         assert input_widget.text == "explain this"
 
     assert app._staged_attachments == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_composer_paste_event_inserts_text_exactly_once(monkeypatch) -> None:
+    """回归: Textual 沿 MRO 会同时分发 ComposerTextArea 与 TextArea 的 _on_paste,
+    粘贴文本不应被插入两遍。"""
+
+    monkeypatch.setattr("firstcoder.app.tui.resolve_paste_attachments", lambda text: [])
+    app = FirstCoderApp()
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        app.post_message(events.Paste("123"))
+        await pilot.pause()
+        composer = app.query_one("#input", ComposerTextArea)
+
+        assert composer.text == "123"
 
 
 @pytest.mark.anyio
@@ -1274,7 +1294,8 @@ async def test_composer_paste_shortcut_leaves_plain_text_for_terminal_paste_even
         app.copy_to_clipboard("hello")
         await pilot.press(paste_key)
         composer = app.query_one("#input", ComposerTextArea)
-        await composer._on_paste(events.Paste("hello"))
+        app.post_message(events.Paste("hello"))
+        await pilot.pause()
 
         assert composer.text == "hello"
         assert app._staged_attachments == []
@@ -3072,6 +3093,28 @@ async def test_firstcoder_app_displays_chat_errors_from_worker() -> None:
         await pilot.press(*"hello")
         await pilot.press("enter")
         await pilot.pause()
+
+    assert runner.inputs == ["hello"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_stops_working_indicator_after_chat_error() -> None:
+    """回归: chat 出错后活动行要落到 error 并停掉动画, 不能一直显示 planning。"""
+
+    runner = FailingAsyncChatRunner()
+    app = FirstCoderApp(chat_runner=runner)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"hello")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app._activity_text == "error"
+        assert app._working_timer is None
+        assert app._activity_timer is None
+        assert "Chat error: RuntimeError: provider down" in _static_output_text(app)
 
     assert runner.inputs == ["hello"]
 

@@ -30,7 +30,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.types import (
@@ -44,6 +44,7 @@ from firstcoder.providers.types import (
     ToolCall,
     ToolChoice,
     ToolChoiceFunction,
+    ToolChoiceMode,
     ToolDefinition,
 )
 from firstcoder.session.models import PiiOptions, RedactionOptions
@@ -498,7 +499,9 @@ def _tool_choice_to_dict(tool_choice: ToolChoice | None) -> Any:
 def _tool_choice_from_dict(data: Any) -> ToolChoice | None:
     if isinstance(data, dict) and data.get("type") == "function":
         return ToolChoiceFunction(name=data["name"])
-    return data
+    if data in ("auto", "none", "required"):
+        return cast(ToolChoiceMode, data)
+    return None
 
 
 def _usage_to_dict(usage: TokenUsage | None) -> dict[str, Any] | None:

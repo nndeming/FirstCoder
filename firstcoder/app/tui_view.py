@@ -389,7 +389,7 @@ class FirstCoderViewMixin:
         scroll_y = float(getattr(output, "scroll_y", 0) or 0)
         max_scroll_y = float(getattr(output, "max_scroll_y", 0) or 0)
         if max_scroll_y and scroll_y < max_scroll_y - 1:
-            return
+            return  # 不在底部, 不滚
         output.scroll_end(animate=False)
 
     def _write_line(
@@ -402,17 +402,25 @@ class FirstCoderViewMixin:
         status: str | None = None,
     ) -> TuiTranscriptEntry:
         """所有屏幕行输出的统一入口: 先记 transcript(重放/重绘的事实来源), 再挂载 widget。"""
+        # 新建一个本次text对应的TuiTranscriptEntry
         entry = self.transcript.add(kind, text, label=label, status=status)
+        # 调用方传入的 CSS 类优先; 没传就按 entry 类型自动推导样式类
         classes = classes or entry_classes(entry)
+        # 格式化文本
         rendered = entry_plain_text(entry)
+        # 找到output控件
         output = self.query_one("#output")
         if hasattr(output, "mount"):
+            # 可以把mount翻译为"挂载"
+            # 创建并返回一个Static控件
             widget = _plain_static(_entry_renderable(entry, rendered), classes=classes)
             entry.widget = widget
+            # 将widget控件挂载到output控件
             output.mount(widget)
             self._scroll_output_end_if_pinned(output)
             return entry
         if hasattr(output, "write_line"):
+            # 这个是测试场景
             output.write_line(rendered)
         return entry
 
@@ -432,7 +440,11 @@ class FirstCoderViewMixin:
             self._start_welcome_particles()
 
     def _dismiss_welcome(self) -> None:
+        """去除欢迎页面
+        """
+        # 停止welcome界面的粒子相关的计时器
         self._stop_welcome_particles()
+        # 获取output控件
         output = self._query_mounted("#output")
         if output is not None and hasattr(output, "remove_class"):
             output.remove_class("welcome-active")
@@ -450,6 +462,8 @@ class FirstCoderViewMixin:
         setattr(self, attr, self.set_interval(interval, callback, name=name))
 
     def _stop_interval_timer(self, attr: str) -> None:
+        """停止`attr`对应的计时器
+        """
         timer = getattr(self, attr, None)
         if timer is None:
             return
@@ -465,6 +479,8 @@ class FirstCoderViewMixin:
         )
 
     def _stop_welcome_particles(self) -> None:
+        """停止welcome界面对应的粒子动画
+        """
         self._stop_interval_timer("_welcome_particle_timer")
 
     def _advance_welcome_particles(self) -> None:
@@ -725,12 +741,16 @@ class FirstCoderViewMixin:
 
     def _set_activity(self, text: str) -> None:
         self._activity_text = text
+        # 找到activity控件
         activity = self._query_mounted("#activity")
         if activity is None:
             return
+        # 将"状态文本"和"本轮统计"拼成最终字符串
         rendered = self.tool_activity_line_text(text, activity)
         if hasattr(activity, "update"):
+            # 将这个字符串放到activity控件上
             activity.update(self._activity_renderable(rendered))
+        # 刷新topbar
         self._refresh_topbar()
 
     def _refresh_topbar(self) -> None:
@@ -739,18 +759,25 @@ class FirstCoderViewMixin:
             topbar.update(self._topbar_text(width=self._topbar_width()))
 
     def _activity_renderable(self, text: str) -> Text:
+        """创建并返回一个带样式的字符串"""
         return Text(text, style="#527c3b")
 
     def tool_activity_line_text(self, text: str, activity) -> str:
+        # 生成右侧统计片段: "耗时 · 工具调用数"
         metrics = turn_metrics_text(self._turn_elapsed_seconds(), self._turn_tool_count)
+        # 取活动行控件的实际宽度(终端可被拉伸, 宽度每次现取)
         width = getattr(getattr(activity, "size", None), "width", None)
         if not isinstance(width, int) or width <= 0:
+            # 拿不到有效宽度(测试替身等): 退化为简单拼接, 空闲时不带统计
             return f"{text} · {metrics}" if text != "idle · ready" else text
         if text == "idle · ready":
+            # 空闲行保持纯文本, 不显示统计
             return text
         if len(text) + len(metrics) + 1 > width:
+            # 状态文本过长会挤掉统计: 先按剩余宽度截断文本
             available = max(1, width - len(metrics) - 1)
             text = truncate_activity_text(text, available)
+        # 中间用空格补齐, 让 metrics 右对齐到控件末端
         return f"{text}{' ' * (width - len(text) - len(metrics))}{metrics}"
 
     def _append_stream_text(self, text: str) -> None:

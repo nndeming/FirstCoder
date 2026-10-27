@@ -81,14 +81,22 @@ class ComposerTextArea(TextArea):
         await super()._on_key(event)
 
     async def _on_paste(self, event: events.Paste) -> None:
-        """先把粘贴内容交给 app 暂存为附件, 消费不了再让 TextArea 当文本插入。"""
+        """先把粘贴内容交给 app 暂存为附件, 消费不了再由 TextArea 默认行为插入文本。
+
+        不要在这里手动调 super()._on_paste: Textual 的消息分发会沿 MRO 把每个类
+        自己定义的 _on_paste 都调一遍, 手动 super 会让 TextArea._on_paste 再跑一次,
+        文本被插入两遍。附件路径下 prevent_default() 置 _no_default_action, 切断
+        MRO 后续分发, TextArea 的插入逻辑随之跳过。
+        """
 
         stage_attachments = getattr(self.app, "_stage_paste_attachments", None)
         if callable(stage_attachments) and stage_attachments(event.text):
             event.stop()
             event.prevent_default()
             return
-        await super()._on_paste(event)
+        # 文本插入交给 MRO 分发到的 TextArea._on_paste; stop 只挡冒泡,
+        # 避免 App.on_paste 再重复探测一次剪贴板图片(Windows 下每次探测都要拉起 PowerShell)。
+        event.stop()
 
     def action_paste(self) -> None:
         """终端发出 Paste 事件前, 先尝试把系统剪贴板图片挂为附件。"""
@@ -111,6 +119,7 @@ class ComposerTextArea(TextArea):
 def _plain_static(content: object = "", *args, **kwargs) -> Static:
     # 默认 markup=False: 输出区内容多为模型/工具文本, 不应当被当作 Rich markup 解析。
     kwargs.setdefault("markup", False)
+    # 创建并返回一个Static控件
     return Static(cast(VisualType, content), *args, **kwargs)
 
 

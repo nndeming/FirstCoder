@@ -12,7 +12,7 @@ from typing import Callable, Iterable
 
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.runtime_capabilities import AgentRuntimeCapabilities
-from firstcoder.app.factory import create_firstcoder_app
+from firstcoder.app.factory import FirstCoderApp, create_firstcoder_app
 from firstcoder.config import load_config
 from firstcoder.config.settings import default_global_config_path, project_config_path, render_default_config
 from firstcoder.input.attachments import UserAttachment, attach_path
@@ -261,7 +261,7 @@ def run_benchmark_turn(config: CliConfig) -> str:
     return response.content
 
 
-def create_cli_app(config: CliConfig):
+def create_cli_app(config: CliConfig) -> FirstCoderApp:
     # 根据是否为benchmark模式, 开放不同的能力
     capabilities = (
         AgentRuntimeCapabilities.benchmark(config.message)

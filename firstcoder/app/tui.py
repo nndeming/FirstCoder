@@ -39,6 +39,7 @@ from firstcoder.app.picker_adapters import (
 from firstcoder.app.session_commands import SESSION_LIST_VISIBLE_LIMIT
 from firstcoder.app.permission_view import permission_choice_for_text, permission_options_text
 from firstcoder.app.review_view import review_command_from_text
+from firstcoder.app.error_view import format_chat_error
 from firstcoder.app.transcript_view import (
     display_line_kind,
     display_line_status,
@@ -92,23 +93,37 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
 
     渲染与事件流助手拆在 `FirstCoderViewMixin`(tui_view.py)，这里只保留输入分发、
     命令 action 路由、picker 交互、turn 生命周期(令牌/打断/权限恢复)。
+
+    构造时只注入 5 个端口(command_handler / chat_runner / current_session /
+    config / on_shutdown, 均为 ports.py 的 Protocol, 具体组装见 factory.py);
+    其余 self._xxx 字段全是 UI 自身状态, 按职责分六组, 与 __init__ 里的分段注释
+    一一对应:
+      1. turn 生命周期   忙标志 / 后台 worker / 递增令牌(作废旧回调)
+      2. 流式渲染       worker 线程入队 delta, UI 线程按 generation 防抖刷出
+      3. 动画状态       working(思考中) 与 activity(工具/流式) 两套帧计时器
+      4. 输入历史       上下箭头翻阅已发消息
+      5. picker/审查    会话、模型、技能选择器与写前审查的展开状态(纯 UI)
+      6. 欢迎页/顶栏    粒子动画与 provider 呼吸光效的计时器
     """
 
-    CSS_PATH = "tui.tcss"
-    ALLOW_SELECT = True
+    # ---- Textual 框架配置(类属性, 框架按约定读取) ----
+    CSS_PATH = "tui.tcss"          # 样式文件, 相对本文件所在目录
+    ALLOW_SELECT = True            # 允许鼠标选中输出区文本
     BINDINGS = [
         ("ctrl+c", "copy_output_or_quit", "Copy output or quit"),
-    ]
-    STREAM_RENDER_INTERVAL_SECONDS = 0.2
-    WORKING_ANIMATION_INTERVAL_SECONDS = 0.18
-    WORKING_FRAMES = ("[.  ]", "[.. ]", "[...]", "[ ..]", "[  .]")
-    ESC_INTERRUPT_WINDOW_SECONDS = 1.0
-    ACTIVITY_ANIMATION_INTERVAL_SECONDS = 0.24
-    WELCOME_PARTICLE_INTERVAL_SECONDS = 0.85
-    PROVIDER_GLOW_INTERVAL_SECONDS = yuren_topbar_themes.GLOW_INTERVAL_SECONDS
-    COMPACT_WELCOME_MAX_WIDTH = 80
+    ]                              # 全局快捷键: 有选中内容时复制, 否则退出
+
+    # ---- 可调参数(时间间隔/尺寸/帧序列等调优常量) ----
+    STREAM_RENDER_INTERVAL_SECONDS = 0.2       # 流式渲染防抖: worker入队delta后, 最多0.2s批量刷一次
+    WORKING_ANIMATION_INTERVAL_SECONDS = 0.18  # "思考中"动画帧间隔
+    WORKING_FRAMES = ("[.  ]", "[.. ]", "[...]", "[ ..]", "[  .]")  # 逐帧轮播形成转圈效果
+    ESC_INTERRUPT_WINDOW_SECONDS = 1.0         # 连按两次 Esc 的判定窗口(见 _last_escape_at)
+    ACTIVITY_ANIMATION_INTERVAL_SECONDS = 0.24  # 活动条(工具/流式)帧间隔
+    WELCOME_PARTICLE_INTERVAL_SECONDS = 0.85   # 欢迎页粒子下落间隔
+    PROVIDER_GLOW_INTERVAL_SECONDS = yuren_topbar_themes.GLOW_INTERVAL_SECONDS  # 顶栏 provider 名呼吸光效间隔(跟随主题)
+    COMPACT_WELCOME_MAX_WIDTH = 80             # 窗口小于该尺寸时换用紧凑版欢迎页
     COMPACT_WELCOME_MAX_HEIGHT = 24
-    ACTIVITY_FRAMES = {
+    ACTIVITY_FRAMES = {                        # 活动条两套帧: 跑工具时 "running", 流式输出时 "streaming"
         "running": ("[=   ]", "[==  ]", "[=== ]", "[ ===]", "[  ==]", "[   =]"),
         "streaming": ("[>   ]", "[>>  ]", "[>>> ]", "[ >>>]", "[  >>]", "[   >]"),
     }
@@ -133,58 +148,76 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         self.config = config or FirstCoderTuiConfig()
         self._on_shutdown = on_shutdown
         self._shutdown_called = False
-        # turn 生命周期: busy/worker 互斥, _chat_turn_token 递增即作废旧 worker 的回调。
+
+        # ---- 1. turn 生命周期 ----
+        # busy 标志: True 期间 composer 拒收新消息(回车只响铃)。
         self._chat_busy = False
+        # 后台聊天 worker 引用: 打断/退出时靠它取消正在跑的 turn。
         self._chat_worker = None
+        # /compact 压缩单独占一个 worker, 与聊天 worker 互不干扰。
         self._compact_worker = None
+        # 递增令牌: 开启新 turn 或打断时 +1, 旧 worker 晚到的回调凭过期令牌被丢弃。
         self._chat_turn_token = 0
+        # 当前 turn 的 (id, token); 权限确认等待期也保留它, 回答后凭同一令牌继续。
         self._active_chat_turn: _ActiveChatTurn | None = None
+        # 上次按 Esc 的时间戳: ESC_INTERRUPT_WINDOW_SECONDS 内连按两次才真打断。
         self._last_escape_at = 0.0
-        # 流式渲染状态: worker 线程入队 delta, UI 线程按 _stream_event_generation 防抖 drain。
-        self._stream_reasoning_started = False
-        self._stream_text_started = False
-        self._stream_text_needs_newline = False
-        self._stream_text_buffer = ""
-        self._stream_text_widget = None
-        self._stream_text_entry: TuiTranscriptEntry | None = None
-        self._stream_rendered_text = ""
-        self._stream_flush_timer: Timer | None = None
-        self._stream_markdown_update = None
-        self._stream_finalizations: dict[FirstCoderMarkdown, object] = {}
-        self._finalized_stream_widgets: set[FirstCoderMarkdown] = set()
-        self._stream_event_lock = threading.Lock()
-        self._stream_event_generation = 0
-        self._stream_event_dispatch_scheduled = False
-        self._pending_stream_text: list[str] = []
-        self._pending_reasoning_text: list[str] = []
-        self._reasoning_buffer = ""
-        self._reasoning_is_fallback = False
-        # 动画状态: working(思考中) 与 activity(工具/流式) 各一套帧计时器。
+
+        # ---- 2. 流式渲染 ----
+        # worker 线程把 stream_event 经回调塞进来(见 tui_view.py), 下面是 UI 侧
+        # 的接收缓冲; 发送方改数据、接收方定时 drain, 因此读写都要在锁内或经队列。
+        self._stream_reasoning_started = False   # reasoning 段头部是否已插入记录流
+        self._stream_text_started = False        # 正文段头部是否已插入记录流
+        self._stream_text_needs_newline = False  # 工具调用插入正文后, 续写前要先补换行
+        self._stream_text_buffer = ""            # 最近一次模型回吐的完整正文快照(去重显示用)
+        self._stream_text_widget = None          # 正在增量更新的 Markdown 控件
+        self._stream_text_entry: TuiTranscriptEntry | None = None  # 该控件所属的记录流条目
+        self._stream_rendered_text = ""          # 该控件里实际已渲染出的文本
+        self._stream_flush_timer: Timer | None = None  # 防抖计时器(STREAM_RENDER_INTERVAL_SECONDS)
+        self._stream_markdown_update = None      # 待执行的 markdown 更新闭包
+        self._stream_finalizations: dict[FirstCoderMarkdown, object] = {}  # 收尾回调: 流自然结束时执行
+        self._finalized_stream_widgets: set[FirstCoderMarkdown] = set()    # 已收尾, 防重复执行
+        self._stream_event_lock = threading.Lock()       # 保护上面这些跨线程字段
+        self._stream_event_generation = 0                # drain 代际: 锁外快速判断有没有新事件
+        self._stream_event_dispatch_scheduled = False    # 已向事件循环预约过 drain, 防重复预约
+        self._pending_stream_text: list[str] = []        # 正文增量队列, drain 时拼到控件
+        self._pending_reasoning_text: list[str] = []     # reasoning 增量队列, 同上
+        self._reasoning_buffer = ""              # reasoning 文本累计(原样, 可能含回退痕迹)
+        self._reasoning_is_fallback = False      # True = buffer 里还是"思考中"占位文案, 真实增量到达时清空重来
+
+        # ---- 3. 动画状态 ----
+        # working(思考中) 一套帧 + 计时器。
         self._working_text = ""
         self._working_frame_index = 0
         self._working_timer: Timer | None = None
+        # activity(工具/流式活动条) 另一套帧 + 计时器。
         self._activity_animation_kind = ""
         self._activity_animation_detail = ""
         self._activity_frame_index = 0
         self._activity_started_at = 0.0
         self._activity_timer: Timer | None = None
+        # 本轮 turn 的统计: 开始时间 / 工具调用计数 / 正在运行的工具 / 活动行文案。
         self._turn_started_at = 0.0
         self._turn_tool_count = 0
         self._running_tool_call_ids: set[str] = set()
-        self._live_tool_events_seen = False
-        self._stream_segment_closed_for_tool = False
+        self._live_tool_events_seen = False      # 本轮是否见到过工具事件(决定结束后是否刷活动行)
+        self._stream_segment_closed_for_tool = False  # 流已因工具调用收段, 恢复时要起新段
         self._activity_text = "idle · ready"
+        # ---- 4. 输入历史 ----
         self._input_history: list[str] = []
         self._input_history_index: int | None = None
-        # picker(会话/模型/技能选择) 与写前审查的展开状态, 都是纯 UI 状态。
-        self._picker: TuiPickerState | None = None
-        self._review_expanded_paths: set[str] = set()
-        self._staged_attachments: list[UserAttachment] = []
+
+        # ---- 5. picker 与写前审查(纯 UI 状态) ----
+        self._picker: TuiPickerState | None = None       # 会话/模型/技能选择器的展开状态
+        self._review_expanded_paths: set[str] = set()    # 写前审查中手动展开的文件路径
+        self._staged_attachments: list[UserAttachment] = []  # 已粘贴待随下一条消息发送的附件
+        # ---- 6. 欢迎页与顶栏动效 ----
         self._welcome_widget: Static | None = None
         self._welcome_particle_timer: Timer | None = None
         self._welcome_particle_frame = 0
         self._provider_glow_timer: Timer | None = None
         self._provider_glow_frame = 0
+        # 正文数据: 对话记录流 与 任务计划面板, 均为自包含状态对象。
         self.transcript = TuiTranscript()
         self.task_plan_panel_state = TuiTaskPlanPanelState()
 
@@ -195,9 +228,10 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             yield _plain_static("", id="task-plan-panel", classes="task-plan-panel hidden")
             yield Static("idle · ready", id="activity", classes="activity-line")
             with Vertical(id="composer", classes="composer"):
+                # 文本输入框
                 yield ComposerTextArea(
                     placeholder="输入消息，Enter 发送，Shift+Enter 换行，Ctrl/Cmd+V 粘贴图片",
-                    id="input",
+                    id="input", # 控件框的名字叫"input"
                     show_line_numbers=False,
                     soft_wrap=True,
                     compact=True,
@@ -228,6 +262,8 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         picker 激活时纯数字输入被当作选择消费掉(此时无法发送纯数字聊天内容);
         其余输入先写入 transcript, 再按是否 "/" 开头分流到命令层或聊天层。
         """
+        # query_one是Textual框架提供的方法, 根据id从控件库中找到对应控件
+        # 此处就是找到输入框
         input_widget = self.query_one("#input", TextArea)
         text = input_widget.text.strip()
         input_widget.clear()
@@ -236,8 +272,11 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             return
         if not text:
             # 只粘贴了附件没有文字时, 给模型一句默认指令。
+            # 这里可以再精细化处理一下
             text = "请分析这些附件。"
+        # 去除欢迎页面
         self._dismiss_welcome()
+        # 记录本次text
         self._record_input_history(text)
 
         if self._picker is not None and text.isdigit():
@@ -245,10 +284,12 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             if self._picker_select_number(int(text)):
                 return
 
+        # 格式化附件格式
         attachment_chips = "\n".join(format_attachment_chip(item) for item in attachments)
         user_display = f"> {text}"
         if attachment_chips:
             user_display = f"{user_display}\n{attachment_chips}"
+        # 将用户发送内容展示到output控件上
         self._write_line(user_display, kind=TuiEntryKind.USER)
 
         if text.startswith("/"):
@@ -256,12 +297,16 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
                 self._write_line("Command handler is not configured.", kind=TuiEntryKind.ERROR)
                 return
 
+            # 手动压缩需要单独处理
             if " ".join(text.split()) == "/compact":
                 self._submit_manual_compact(text)
                 return
 
+            # 处理其他命令: 命令层是纯逻辑, 返回文字输出 + 可选的 action 请求单;
+            # 文字先上屏, 请求单再交给 _handle_command_action 翻译成界面操作
             result = self.command_handler.handle(text)
             if result.handled:
+                # 处理完成
                 self._write_line(result.output, kind=TuiEntryKind.COMMAND)
                 self._handle_command_action(result.action, output=result.output)
                 self._refresh_session_subtitle()
@@ -279,24 +324,32 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         anyio.to_thread 甩到线程执行。
         """
         if self._chat_busy:
+            # 如果对话正在进行, 则不能进行压缩
             self._write_line("Chat is still running. Please wait before compacting context.", kind=TuiEntryKind.SYSTEM)
             return
         if self._compact_worker is not None:
             self._write_line("Manual compact is already running.", kind=TuiEntryKind.SYSTEM)
             return
+        # 设置activity控件显示的内容
         self._set_activity("compacting context...")
+        # 在output控件中显示相关内容
         self._write_line("Manual compact started.", kind=TuiEntryKind.SYSTEM)
+        # run_worker是DOMNode类的, 是Textual库内的
+        # 这里是将协程给到run_worker(), 它给我们返回一个函数句柄, 我们用句柄来取消和查询这个协程的状态
+        # 此处的协程会放入App.run()所创建的eventloop中, 只不过这个协程内部又单开了一个新的线程
         self._compact_worker = self.run_worker(self._run_manual_compact_command(text))
 
     async def _run_manual_compact_command(self, text: str) -> None:
         try:
             assert self.command_handler is not None
+            # command_handler 是同步代码, 内部没有 await 挂起点: 直接跑在事件循环上会阻塞界面。
+            # 靠协程挂起就得把整条链改造成异步 IO 库, 故用线程将这段同步执行与 UI 循环隔离。
             result = await anyio.to_thread.run_sync(self.command_handler.handle, text)
         except asyncio.CancelledError:
             # worker 被取消(退出/打断)属正常路径, 静默退出。
             return
         except Exception as exc:
-            self._write_line(f"Manual compact error: {exc}", kind=TuiEntryKind.ERROR)
+            self._write_line(format_chat_error(exc, prefix="Manual compact error"), kind=TuiEntryKind.ERROR)
             return
         finally:
             self._compact_worker = None
@@ -527,13 +580,15 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         3. 以上都不是: 开新 turn。
         """
         if self.chat_runner is None:
-            self._write_line("普通聊天入口尚未接入 AgentLoop。", kind=TuiEntryKind.ERROR)
+            self._write_line("普通聊天入口尚未接入AgentLoop", kind=TuiEntryKind.ERROR)
             return
 
+        # 正在压缩
         if self._compact_worker is not None:
             self._write_line("Manual compact is still running. Please wait before sending a chat message.", kind=TuiEntryKind.SYSTEM)
             return
 
+        # 当前对话还在进行中
         if self._chat_busy:
             add_guidance = getattr(self.chat_runner, "add_guidance", None)
             if add_guidance is None:
@@ -542,15 +597,18 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
                     kind=TuiEntryKind.SYSTEM,
                 )
                 return
+            # 文本作为guidance注入运行中的turn
             add_guidance(text)
             self._write_line("Guidance queued for the running turn.", kind=TuiEntryKind.SYSTEM)
             self._set_activity("running · guidance queued")
             return
 
+        # 有挂起的权限确认
         pending = getattr(self.chat_runner, "last_pending_input", None)
         if pending is not None and getattr(pending, "kind", None) == "permission_confirmation":
             payload = getattr(pending, "payload", {}) or {}
             review_payload = payload.get("prewrite_review")
+            # 如果是review相关的确认
             if isinstance(review_payload, dict):
                 review_command = review_command_from_text(text, review_payload)
                 if review_command is not None:
@@ -563,6 +621,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
                         self._review_expanded_paths.add(path)
                     self._write_review_payload(review_payload)
                     return
+            # 权限确认相关的选项
             choice = permission_choice_for_text(text, pending)
             if choice is None:
                 # 不是有效选项: 重打选项卡等用户再答, 不推进任何状态。
@@ -580,25 +639,35 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
     def _handle_command_action(self, action: dict[str, Any] | None, *, output: str = "") -> bool:
         """执行命令层经 CommandResult.action 带上来的 UI 副作用。
 
-        action 是命令层(纯逻辑, 不碰 widget) 通知 TUI 做事的唯一通道:
+        设计背景: 命令层(处理 /resume、/model 等斜杠命令)是纯逻辑, 不接触任何 widget,
+        以便脱离界面单独测试、并被 CLI/TUI 复用。但有些命令的结果必须搭配界面才有
+        意义(弹选择器、清屏), 于是命令层把这类意图写成 action 字典,
+        由本方法翻译成具体的 widget 操作
+
+        请求单的每种 type 对应一种界面操作:
         submit_chat 注入文本当用户消息; new_session 清屏; *_picker 打开选择器;
         replay_session 重放会话; model_changed 刷顶栏; skill_referenced 把技能
-        引用插进输入框。
+        引用插进输入框
         """
         if not action:
             return False
+        # 获取类型
         action_type = action.get("type")
         if action_type == "submit_chat":
+            # 命令要求把一段文本当用户消息重新走聊天流程(如 /attach 后注入消息)
             text = str(action.get("text") or "").strip()
             if text:
                 self._submit_chat_text(text)
             return True
         if action_type == "new_session":
+            # 新会话: 关选择器、清输出区、显示命令输出
             self._picker = None
             self._clear_output()
             if output:
                 self._write_line(output, kind=TuiEntryKind.COMMAND)
             return False
+        # 三个选择器共用一套 _open_picker, 只是参数不同; 表内每项为
+        # (kind, 标题, items 在请求单里的键, 条目工厂, 空列表文案, 底部提示, 计数标签)
         picker_specs = {
             "resume_picker": (
                 "resume",
@@ -631,6 +700,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         picker_spec = picker_specs.get(action_type) if isinstance(action_type, str) else None
         if picker_spec is not None:
             kind, title, items_key, item_factory, empty_text, footer, count_label = picker_spec
+            # 从请求单里取条目数据, 转成 picker 条目后打开选择器
             self._open_picker(
                 kind=kind,
                 title=title,
@@ -642,16 +712,19 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             )
             return False
         if action_type == "replay_session":
+            # 会话切换/恢复后, 把当前会话内容重放到输出区
             self._picker = None
             self._replay_current_session()
             return False
         if action_type == "model_changed":
+            # 模型已切换: 更新配置并同步顶栏流光动画
             self._picker = None
             self.config.provider_name = str(action.get("provider") or "")
             self.config.provider_model = str(action.get("model") or "")
             self._sync_provider_glow()
             return False
         if action_type == "skill_referenced":
+            # 把技能引用(如 /skill 选的技能)插进输入框
             self._picker = None
             self._insert_input_text(str(action.get("reference") or ""))
             return False
@@ -697,6 +770,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             return
         if index < 0 or index >= len(picker.items):
             return
+        # 获取选项对应的item
         item = picker.items[index]
         command = picker_command(picker.kind, item)
         if not command:
@@ -855,7 +929,12 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             return
         except Exception as exc:
             if self._is_current_chat_turn(token):
-                self._write_line(f"Chat error: {exc}", kind=TuiEntryKind.ERROR)
+                # 异常路径也要停掉 working/activity 动画, 否则 "planning next step..."
+                # 计时器会一直转下去, 看起来像仍在等待回复。
+                self._stop_working_animation()
+                self._stop_activity_animation()
+                self._set_activity("error")
+                self._write_line(format_chat_error(exc), kind=TuiEntryKind.ERROR)
                 self._refresh_session_subtitle()
             return
         finally:
@@ -900,7 +979,12 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             return
         except Exception as exc:
             if self._is_current_chat_turn(token):
-                self._write_line(f"Chat error: {exc}", kind=TuiEntryKind.ERROR)
+                # 异常路径也要停掉 working/activity 动画, 否则 "planning next step..."
+                # 计时器会一直转下去, 看起来像仍在等待回复。
+                self._stop_working_animation()
+                self._stop_activity_animation()
+                self._set_activity("error")
+                self._write_line(format_chat_error(exc), kind=TuiEntryKind.ERROR)
                 self._refresh_session_subtitle()
             return
         finally:

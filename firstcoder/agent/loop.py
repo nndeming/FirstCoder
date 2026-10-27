@@ -47,7 +47,7 @@ from firstcoder.input.attachments import UserAttachment
 from firstcoder.permissions.types import PermissionRequest
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
-from firstcoder.providers.types import ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, FinishReason, MainRequestOptions, ToolCall
+from firstcoder.providers.types import ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, FinishReason, MainRequestOptions, ToolCall, ToolChoice
 from firstcoder.tools.background import create_background_cancel_tool, create_background_status_tool
 from firstcoder.agent.subagent import SubagentRunner
 from firstcoder.tools.delegate import create_delegate_tool
@@ -347,7 +347,7 @@ class AgentLoop:
 
     # 工具循环：先保存模型调用，再执行工具，最后把结果交回模型。
 
-    def _run_tool_loop_interactive(self, complete_once, *, initial_tool_choice="auto") -> AgentTurnResult:
+    def _run_tool_loop_interactive(self, complete_once, *, initial_tool_choice: ToolChoice = "auto") -> AgentTurnResult:
         """核心工具循环: 问模型, 执行工具, 再把工具结果回喂给模型。
 
         退出条件只有三类:
@@ -455,7 +455,7 @@ class AgentLoop:
             response = self._drop_unsupported_tool_calls(complete_once())
         return response, None, tool_rounds
 
-    async def _run_tool_loop_interactive_async(self, complete_once, *, initial_tool_choice="auto") -> AgentTurnResult:
+    async def _run_tool_loop_interactive_async(self, complete_once, *, initial_tool_choice: ToolChoice = "auto") -> AgentTurnResult:
         """streaming 版本的工具循环，语义与同步版本一致。"""
 
         guardrail_stop = False
@@ -792,7 +792,7 @@ class AgentLoop:
     def _complete_once_with_recovery(
         self,
         *,
-        tool_choice="auto",
+        tool_choice: ToolChoice = "auto",
         runtime_instruction: str | None = None,
     ) -> ChatResponse:
         """同步模式下一次 provider 调用, 并处理 prompt-too-long 的单次恢复
@@ -828,7 +828,7 @@ class AgentLoop:
     def _complete_once(
         self,
         *,
-        tool_choice="auto",
+        tool_choice: ToolChoice = "auto",
         runtime_instruction: str | None = None,
     ) -> ChatResponse:
         """构造一次 provider 请求并获得模型响应。
@@ -851,7 +851,7 @@ class AgentLoop:
     async def _stream_once_with_recovery(
         self,
         *,
-        tool_choice="auto",
+        tool_choice: ToolChoice = "auto",
         runtime_instruction: str | None = None,
     ) -> ChatResponse:
         transient_retries = 0
@@ -887,7 +887,7 @@ class AgentLoop:
     async def _stream_once_attempt(
         self,
         *,
-        tool_choice="auto",
+        tool_choice: ToolChoice = "auto",
         runtime_instruction: str | None = None,
     ) -> ChatResponse:
         start_event_count = len(self.last_stream_events)
@@ -905,7 +905,7 @@ class AgentLoop:
     async def _stream_once(
         self,
         *,
-        tool_choice="auto",
+        tool_choice: ToolChoice = "auto",
         runtime_instruction: str | None = None,
     ) -> ChatResponse:
         """消费一次 provider stream，最终仍返回完整 ChatResponse。
@@ -956,7 +956,7 @@ class AgentLoop:
     def _prepare_main_provider_request(
         self,
         *,
-        tool_choice="auto",
+        tool_choice: ToolChoice = "auto",
         runtime_instruction: str | None = None,
     ) -> PreparedMainRequest:
         """修补上下文, 必要时压缩, 最后拼出请求
