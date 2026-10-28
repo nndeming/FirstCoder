@@ -29,6 +29,7 @@ from firstcoder.tools.write import create_write_tool
 from firstcoder.tools.descriptions import apply_agent_tool_description
 from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.agent.processes import ProcessManager
+from firstcoder.agent.shell_session import ShellSessionManager
 
 
 def create_builtin_registry(
@@ -41,6 +42,7 @@ def create_builtin_registry(
     include_think: bool = True,
     include_web_search: bool = True,
     process_manager: ProcessManager | None = None,
+    shell_session_manager: ShellSessionManager | None = None,
 ) -> ToolRegistry:
     """创建不依赖会话状态的内置工具集合。
 
@@ -76,7 +78,7 @@ def create_builtin_registry(
     if include_execution_tools:
         tools.extend(
             [
-                create_shell_tool(root, access=access),
+                create_shell_tool(root, access=access, session_manager=shell_session_manager),
                 create_python_exec_tool(root, access=access),
             ]
         )
