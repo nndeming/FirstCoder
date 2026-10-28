@@ -9,6 +9,7 @@ from typing import Protocol
 
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.processes import ProcessManager
+from firstcoder.agent.shell_session import ShellSessionManager
 from firstcoder.agent.runtime_capabilities import AgentRuntimeCapabilities
 from firstcoder.app.commands import ContextCommandHandler
 from firstcoder.app.help_commands import HelpCommandHandler
@@ -190,6 +191,8 @@ def create_firstcoder_app(
 
     # 进程管理 + 日志
     process_manager = ProcessManager(log_root=resolved_data_root / "processes")
+    # 持久 shell 会话：shell 工具的多次调用共享一个长驻 bash，env/cwd/后台作业跨调用保留
+    shell_session_manager = ShellSessionManager()
 
     # 内置工具
     resolved_tools = (
@@ -207,6 +210,7 @@ def create_firstcoder_app(
             process_manager=(
                 process_manager if resolved_capabilities.enable_process_tools else None
             ),
+            shell_session_manager=shell_session_manager,
         ).tools()
     )
 
@@ -337,13 +341,15 @@ def create_firstcoder_app(
             mcp_manager=mcp_manager,
             background_manager=background_manager,
             process_manager=process_manager,
+            shell_session_manager=shell_session_manager,
         ),
     )
 
 
-def _shutdown_runtime(*, mcp_manager, background_manager, process_manager) -> None:
+def _shutdown_runtime(*, mcp_manager, background_manager, process_manager, shell_session_manager) -> None:
     """按本地进程、后台线程、外部连接的顺序清理 TUI 运行时。"""
 
+    shell_session_manager.shutdown()
     process_manager.shutdown()
     background_manager.shutdown()
     mcp_manager.close()
